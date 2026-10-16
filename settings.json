@@ -1,0 +1,38 @@
+{
+    "min_flag_area": 500,
+    "aspect_ratio_range": [0.5, 2.0],
+    "kernel_size": 5,
+    "blur_kernel_size": 5,
+    "colors": {
+        "red": {
+            "lower1": [0, 120, 70],
+            "upper1": [10, 255, 255],
+            "lower2": [170, 120, 70],
+            "upper2": [180, 255, 255]
+        },
+        "blue": {
+            "lower1": [100, 150, 50],
+            "upper1": [140, 255, 255]
+        },
+        "green": {
+            "lower1": [35, 100, 50],
+            "upper1": [85, 255, 255]
+        },
+        "yellow": {
+            "lower1": [20, 100, 100],
+            "upper1": [35, 255, 255]
+        },
+        "orange": {
+            "lower1": [10, 100, 100],
+            "upper1": [20, 255, 255]
+        },
+        "purple": {
+            "lower1": [130, 50, 50],
+            "upper1": [160, 255, 255]
+        },
+        "white": {
+            "lower1": [0, 0, 200],
+            "upper1": [180, 30, 255]
+        }
+    }
+}
