@@ -45,13 +45,46 @@ def build_mask(hsv_frame, color_ranges, settings):
     return mask #mask is cleaned and sent 
 
 def find_largest_blob(mask, settings):
-#Find the largest contour that passes area and shape checks
-#Find the outlines of the white areas in the mask
-    contours, _= cv2.findContours(
+    contours, _ = cv2.findContours(
         mask,
-        cv2.RETR_EXTERNAL, #keeps only outer outlines 
+        cv2.RETR_EXTERNAL,
         cv2.CHAIN_APPROX_SIMPLE
     )
+
+    # Scale the noise threshold with the image resolution.
+    image_height, image_width = mask.shape[:2]
+    image_area = image_height * image_width
+    min_area = settings["min_flag_area_ratio"] * image_area
+
+    # None means no restriction on flag proportions.
+    aspect_limits = settings.get("aspect_ratio_range")
+
+    valid_blobs = []
+
+    for contour in contours:
+        area = cv2.contourArea(contour)
+
+        if area < min_area:
+            continue
+
+        x, y, w, h = cv2.boundingRect(contour)
+
+        if aspect_limits is not None:
+            min_ar, max_ar = aspect_limits
+            aspect_ratio = w / h
+
+            if not (min_ar <= aspect_ratio <= max_ar):
+                continue
+
+        valid_blobs.append({
+            "area": area,
+            "box": (x, y, w, h)
+        })
+
+    if not valid_blobs:
+        return None
+
+    return max(valid_blobs, key=lambda blob: blob["area"])
 
     min_area=settings["min_flag_area"] #limits from settings
     min_ar, max_ar=settings["aspect_ratio_range"]
@@ -78,7 +111,7 @@ def find_largest_blob(mask, settings):
     return max(valid_blobs, key=lambda blob: blob["area"]) #return the biggest blob/ thes survivor with the biggest area
 #lambda blob: blob["area"] tells max to compare blobs by their area 
 
-def detect_flag(frame,settings):
+def detect_flag(frame, settings, target_color=None): # was def detect_flag(frame,settings):
     """Detects flag color, bounding box, area, and center."""
 #blur first to smooth out camera noise
     blur_ksize=settings.get("blur_kernel_size", 5)
@@ -91,7 +124,9 @@ def detect_flag(frame,settings):
     best_blob=None
 #try every color from settings file 
     for color_name, ranges in settings["colors"].items():
-        mask=build_mask(hsv, ranges, settings) 
+        if target_color is not None and color_name != target_color:
+            continue
+        mask = build_mask(hsv, ranges, settings)
         blob=find_largest_blob(mask, settings)
 #mask is made first  to find the best flag shaped blob in that mask
 
@@ -153,7 +188,7 @@ def main():
         print(f"[ERROR] {e}")
         return
 
-    cap=cv2.VideoCapture(0)
+    cap=cv2.VideoCapture("http://192.168.1.103:81/stream") # we should put the URI of straming adress here ex:"http://192.168.1.107:81/stream"
     if not cap.isOpened():
         print("[ERROR] Could not open camera.")
         return
@@ -163,6 +198,7 @@ def main():
 
     max_consecutive_failures=30 #30 failed frame max
     failure_count=0
+    target_color = None
 
     while True: #runs oncer per camera frame
         ret, frame=cap.read() #ret=true if a frame was grabbed 
@@ -178,7 +214,8 @@ def main():
         
         failure_count=0
 #look for a flag in this single frame
-        raw_detection=detect_flag(frame, settings)
+        calibration_frame = frame.copy()  
+        raw_detection=detect_flag(frame, settings , target_color)
 #confirm if it was seen several frames in a row
         stable_result=stabilizer.update(raw_detection)
 
@@ -201,8 +238,73 @@ def main():
 #show the frame in a window
         cv2.imshow("Flag Vision Module", frame)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'): #press q exists the camera
+        key = cv2.waitKey(1) & 0xFF
+
+        if key == ord('q'):
             break
+        elif key == ord('c'):
+            roi = cv2.selectROI(
+                "Calibration sample",
+                calibration_frame,
+                showCrosshair=True,
+                fromCenter=False
+            )
+
+            cv2.destroyWindow("Calibration sample")
+
+            x, y, w, h = map(int, roi)
+
+            if w > 0 and h > 0:
+                sample = calibration_frame[y:y+h, x:x+w]
+                sample_hsv = cv2.cvtColor(
+                    sample, cv2.COLOR_BGR2HSV
+                )
+
+                calibration_pixels = sample_hsv.reshape(-1, 3)
+                sample_result = detect_flag(sample, settings)
+
+                if sample_result["detected"]:
+                    target_color = sample_result["color"]
+                    print(f"[INFO] Target color locked: {target_color}")
+                else:
+                    print(
+                        "[WARN] Sample color not recognized. "
+                        "Previous target kept."
+                    )
+
+                print(
+                    f"[INFO] Selected "
+                    f"{len(calibration_pixels)} calibration pixels."
+                )
+            else:
+                print("[INFO] Calibration cancelled.")
+
+            stabilizer = FlagStabilizer(
+                required_consecutive_frames=4
+            )
+
+        elif key == ord('r'):
+               
+            try:
+                updated_settings = load_settings()
+
+                if "min_flag_area_ratio" not in updated_settings:
+                    raise ValueError(
+                        "Missing 'min_flag_area_ratio' in settings.json"
+                    )
+
+                settings = updated_settings
+
+                stabilizer = FlagStabilizer(
+                    required_consecutive_frames=4
+                )
+
+                print("[INFO] Settings reloaded. Confirmation reset.")
+
+            except Exception as e:
+                print(
+                    f"[WARN] Reload failed; keeping previous settings: {e}"
+                )
 
     cap.release()
     cv2.destroyAllWindows()
