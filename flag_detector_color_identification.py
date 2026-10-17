@@ -153,7 +153,7 @@ def main():
         print(f"[ERROR] {e}")
         return
 
-    cap=cv2.VideoCapture(0)
+    cap=cv2.VideoCapture("http://192.168.1.103:81/stream") # we should put the URI of straming adress here ex:"http://192.168.1.107:81/stream"
     if not cap.isOpened():
         print("[ERROR] Could not open camera.")
         return
