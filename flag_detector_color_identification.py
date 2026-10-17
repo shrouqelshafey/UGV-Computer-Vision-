@@ -45,13 +45,46 @@ def build_mask(hsv_frame, color_ranges, settings):
     return mask #mask is cleaned and sent 
 
 def find_largest_blob(mask, settings):
-#Find the largest contour that passes area and shape checks
-#Find the outlines of the white areas in the mask
-    contours, _= cv2.findContours(
+    contours, _ = cv2.findContours(
         mask,
-        cv2.RETR_EXTERNAL, #keeps only outer outlines 
+        cv2.RETR_EXTERNAL,
         cv2.CHAIN_APPROX_SIMPLE
     )
+
+    # Scale the noise threshold with the image resolution.
+    image_height, image_width = mask.shape[:2]
+    image_area = image_height * image_width
+    min_area = settings["min_flag_area_ratio"] * image_area
+
+    # None means no restriction on flag proportions.
+    aspect_limits = settings.get("aspect_ratio_range")
+
+    valid_blobs = []
+
+    for contour in contours:
+        area = cv2.contourArea(contour)
+
+        if area < min_area:
+            continue
+
+        x, y, w, h = cv2.boundingRect(contour)
+
+        if aspect_limits is not None:
+            min_ar, max_ar = aspect_limits
+            aspect_ratio = w / h
+
+            if not (min_ar <= aspect_ratio <= max_ar):
+                continue
+
+        valid_blobs.append({
+            "area": area,
+            "box": (x, y, w, h)
+        })
+
+    if not valid_blobs:
+        return None
+
+    return max(valid_blobs, key=lambda blob: blob["area"])
 
     min_area=settings["min_flag_area"] #limits from settings
     min_ar, max_ar=settings["aspect_ratio_range"]

@@ -1,14 +1,15 @@
 {
-    "min_flag_area": 500,
-    "aspect_ratio_range": [0.5, 2.0],
-    "kernel_size": 5,
-    "blur_kernel_size": 5,
+    "min_flag_area_ratio": 0.001,
+    "aspect_ratio_range": null,
+    "kernel_size": 3,
+    "blur_kernel_size": 3,
     "colors": {
-        "red": {
-            "lower1": [0, 120, 70],
-            "upper1": [10, 255, 255],
-            "lower2": [170, 120, 70],
-            "upper2": [180, 255, 255]
+       "red": {
+    "lower1": [0, 45, 40],
+    "upper1": [10, 255, 255],
+    "lower2": [170, 45, 40],
+    "upper2": [179, 255, 255]
+             
         },
         "blue": {
             "lower1": [100, 150, 50],
