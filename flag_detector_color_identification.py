@@ -234,8 +234,32 @@ def main():
 #show the frame in a window
         cv2.imshow("Flag Vision Module", frame)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'): #press q exists the camera
+        key = cv2.waitKey(1) & 0xFF
+
+        if key == ord('q'):
             break
+
+        elif key == ord('r'):
+            try:
+                updated_settings = load_settings()
+
+                if "min_flag_area_ratio" not in updated_settings:
+                    raise ValueError(
+                        "Missing 'min_flag_area_ratio' in settings.json"
+                    )
+
+                settings = updated_settings
+
+                stabilizer = FlagStabilizer(
+                    required_consecutive_frames=4
+                )
+
+                print("[INFO] Settings reloaded. Confirmation reset.")
+
+            except Exception as e:
+                print(
+                    f"[WARN] Reload failed; keeping previous settings: {e}"
+                )
 
     cap.release()
     cv2.destroyAllWindows()
