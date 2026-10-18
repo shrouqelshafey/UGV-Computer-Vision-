@@ -203,6 +203,7 @@ def main():
     while True: #runs oncer per camera frame
         ret, frame=cap.read() #ret=true if a frame was grabbed 
         if not ret:
+            stabilizer = FlagStabilizer(required_consecutive_frames=4)
             failure_count+=1
             print(f"[WARN] Failed to grab frame ({failure_count}/{max_consecutive_failures}). Retrying...")
             if failure_count >= max_consecutive_failures:
