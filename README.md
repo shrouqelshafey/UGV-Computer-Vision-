@@ -24,6 +24,7 @@ Before a target is selected, the detector compares all configured colors. After 
 | Adjusted red HSV thresholds and 3×3 processing kernels | Recover the dim, low-saturation practice target that the original settings missed; retain smaller details during cleanup. |
 | `r`: reload settings | Apply saved JSON changes during a run and restart detection confirmation. |
 | `c`: select a sample and lock its recognized color | Restrict detection to the color chosen from the camera image. |
+| Normalized horizontal error display | Show whether the confirmed flag is left, centered, or right, using the same scale at different image widths. |
 | Capture timeouts and bounded reconnection | Reset confirmation on failed reads, clear the old detection display, and attempt to restore an interrupted stream. |
 
 The existing four-detection stabilizer is retained. It confirms a color after four consecutive successful same-color results, rather than after four seconds. It does not verify that those results belong to the same physical object.
@@ -106,6 +107,16 @@ To select a sample:
 The selector intentionally displays a still image. Press `c` again in the main video window to select a different target color. Restarting the program clears the selection. A settings reload retains the selected color name, while applying its newly loaded profile.
 
 If settings reload fails during parsing or the checks currently implemented, the handler prints a warning and keeps the previous settings. Validation is incomplete; not every malformed value is rejected before detection resumes.
+
+## Horizontal position for control integration
+
+For a confirmed detection, the preview displays `X error`. The image midpoint is `(width - 1) / 2`, and the error is `(flag_center_x - midpoint) / midpoint`. A single-column image uses zero to avoid division by zero.
+
+- `-1`: left edge of the image.
+- Near `0`: centered in the image.
+- `+1`: right edge of the image.
+
+This value is currently calculated and displayed only for confirmed detections. It is not yet transmitted to the control ESP32 or used to command motors. The control team must agree on communication and steering behavior before integration.
 
 ## Camera failure and recovery
 

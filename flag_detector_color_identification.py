@@ -293,6 +293,19 @@ def main():
             color=stable_result["color"]
             x, y, w, h=stable_result["box"]
             cx, cy=stable_result["center"]
+            # Compare the flag center with the middle of the image.
+            image_center_x = (frame.shape[1] - 1) / 2.0
+
+            # Normalize position: negative = left, positive = right.
+            x_error = (
+                (cx - image_center_x) / image_center_x
+                if image_center_x > 0 else 0.0
+            )
+            # Display the value so we can check its direction.
+            cv2.putText(
+                frame, f"X error: {x_error:+.2f}", (20, 110),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2
+            )
             area=stable_result["area"]
 #green box around the falg, red dot at the center
             cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
