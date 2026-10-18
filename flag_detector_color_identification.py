@@ -2,6 +2,7 @@ import cv2
 import json
 import numpy as np
 import time
+import serial 
 #min_flag_area->the smallest size a shape can be to count as a flag 
 #(man3mlhash too low 3ashan el specks dont get treated as a flag wala too high so that the real flag doesn't get rejected)\
 #aspect_ratio_range->how wide the shape is compared to its height, removes things that are the wrong shape
@@ -181,12 +182,29 @@ class FlagStabilizer:
             }
         return {"confirmed": False}
 
+def announce_on_lcd(color, esp32):
+    message = f"FLAG DETECTED\nCOLOR: {color.upper()}"
+
+    print(message)  #Also display the message in the terminal
+
+    esp32.write(f"FLAG_DETECTED,{color.upper()}\n".encode("utf-8"))
+
 def main():
     try:
         settings = load_settings()
     except Exception as e:
         print(f"[ERROR] {e}")
         return
+    
+    #The main ESP32 for the LCD is not connected yet.
+    #True when the ESP32 is connected and the serial port is correct, False otherwise.
+    USE_ESP32= False
+    esp32= None 
+
+    if USE_ESP32:
+        esp32 = serial.Serial("COM5", 115200, timeout=1)
+        time.sleep(2)
+
 
     cap=cv2.VideoCapture("http://192.168.1.103:81/stream") # we should put the URI of straming adress here ex:"http://192.168.1.107:81/stream"
     if not cap.isOpened():
@@ -199,6 +217,8 @@ def main():
     max_consecutive_failures=30 #30 failed frame max
     failure_count=0
     target_color = None
+    flag_announced= False 
+    lost_frames= 0
 
     while True: #runs oncer per camera frame
         ret, frame=cap.read() #ret=true if a frame was grabbed 
@@ -218,9 +238,18 @@ def main():
         raw_detection=detect_flag(frame, settings , target_color)
 #confirm if it was seen several frames in a row
         stable_result=stabilizer.update(raw_detection)
-
-        if stable_result["confirmed"]: #drawing the results
+        if stable_result["confirmed"]:
             color=stable_result["color"]
+
+            #Announce the flag only once per detection event
+            if not flag_announced:
+                if esp32 is not None:
+                    announce_on_lcd(color, esp32)
+                else:
+                    print(f"[INFO] FLAG DETECTED - COLOR: {color.upper()}")
+
+                flag_announced=True
+            lost_frames=0
             x, y, w, h=stable_result["box"]
             cx, cy=stable_result["center"]
             area=stable_result["area"]
@@ -233,7 +262,12 @@ def main():
             cv2.putText(frame, f"Center: ({cx}, {cy})", (20, 75), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         else:
-            cv2.putText(frame, "Status: Searching / Stabilizing...", (20, 40), 
+             lost_frames += 1
+
+             if lost_frames >= 10:
+                flag_announced=False
+
+             cv2.putText(frame, "Status: Searching / Stabilizing...", (20, 40), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 #show the frame in a window
         cv2.imshow("Flag Vision Module", frame)
