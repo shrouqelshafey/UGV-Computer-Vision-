@@ -24,6 +24,7 @@ Before a target is selected, the detector compares all configured colors. After 
 | Adjusted red HSV thresholds and 3×3 processing kernels | Recover the dim, low-saturation practice target that the original settings missed; retain smaller details during cleanup. |
 | `r`: reload settings | Apply saved JSON changes during a run and restart detection confirmation. |
 | `c`: select a sample and lock its recognized color | Restrict detection to the color chosen from the camera image. |
+| Capture timeouts and bounded reconnection | Reset confirmation on failed reads, clear the old detection display, and attempt to restore an interrupted stream. |
 
 The existing four-detection stabilizer is retained. It confirms a color after four consecutive successful same-color results, rather than after four seconds. It does not verify that those results belong to the same physical object.
 
@@ -106,6 +107,16 @@ The selector intentionally displays a still image. Press `c` again in the main v
 
 If settings reload fails during parsing or the checks currently implemented, the handler prints a warning and keeps the previous settings. Validation is incomplete; not every malformed value is rejected before detection resumes.
 
+## Camera failure and recovery
+
+The FFmpeg capture uses a 5-second opening timeout and an 8-second reading timeout. These settings limit individual I/O waits; they do not prove that a received frame is fresh.
+
+On a failed read, the detector resets confirmation and replaces the last detection image with a `Camera unavailable` status. After 30 consecutive failed reads, it releases the old capture and makes up to five reconnection attempts. A successful attempt must both open the stream and read a frame. Failed captures are released, with a short wait between attempts.
+
+Successful recovery retains the selected target-color name and requires four subsequent successful same-color detections before confirmation. Exhausting the attempts exits the program. `q` is checked during failed-read waits and between reconnection attempts; opening/reading I/O can delay its response until the configured timeout.
+
+The initial startup still exits if the first opening attempt fails. Reconnection uses the same configured IP address; if the camera receives a different address, update `camera_url`. Real camera-disconnection testing remains pending.
+
 ## Current settings
 
 | Setting | Current value | Meaning |
@@ -166,6 +177,7 @@ Following the instruction to remove the red paper while retaining the running se
 | Current source and detection helpers | Offline check on 2026-10-17: source parsed; solid synthetic red, green, blue, and yellow samples recognized. |
 | Color restriction logic | Offline check on 2026-10-17: selected red ignored a larger blue region; removing red produced no detection. |
 | Confirmation logic | Offline check on 2026-10-17: confirmed on the fourth same-color detection and reset on a no-detection result. |
+| Failed-read reset and reconnection | Simulated main-loop checks on 2026-10-18 passed for recovery, selected-color retention, four new detections after recovery, a cleared offline display, five failed attempts, `q` cancellation, and capture cleanup. Live disconnection/recovery is still pending. |
 | Live `c` sample-selection interface | User supplied a screenshot of the selector with a rectangle inside the red practice target. |
 | Live sample recognition and target-color lock | User supplied terminal evidence: `Target color locked: red` and `Selected 4536 calibration pixels.` |
 | Live red detection after sample selection | Screenshot reports red, contour area 3773, center (108, 113), with a dark blue-looking object below and no box on it. This is one observed scene. |
@@ -192,7 +204,7 @@ For each live test, record: test ID, lighting, resolution, selected color, targe
 - Test lighting changes, multiple flag sizes, no flag, wrong colors, and same-color distractors. There is no measured accuracy score yet.
 - Improve settings validation and resolve the settings path relative to the script.
 - Remove the unreachable old area-filter code remaining after the new function's return.
-- Add bounded capture behavior, reconnection, and resets after frame failures. Failed reads currently skip the stabilizer update, so old confirmation can survive a stream interruption.
+- Live-test camera disconnection and reconnection, including changed IP addresses, repeated interruptions, and shutdown during recovery. Add stale-frame detection and latency measurements; a stream that returns old frames can still appear readable.
 - Agree the controller interface and confirm the allowed processing architecture. The current laptop prototype does not demonstrate standalone competition operation.
 - Integrate image-position output with control. The ultrasonic sensor, rather than apparent flag size, must provide the mission's distance measurement.
 
@@ -206,3 +218,4 @@ Color selection is not physical-object tracking: another object matching the sel
 | `68d0dd8` | Adjust practice red settings and make size filters configurable. |
 | `cf36d2a` | Reload vision settings with the `r` key. |
 | `6fa884f` | Select a color sample and restrict detection to its recognized color. |
+| `45a544b` | Reset confirmation after a failed frame read. |

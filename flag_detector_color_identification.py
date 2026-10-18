@@ -2,9 +2,9 @@ import cv2
 import json
 import numpy as np
 import time
-#min_flag_area->the smallest size a shape can be to count as a flag 
-#(man3mlhash too low 3ashan el specks dont get treated as a flag wala too high so that the real flag doesn't get rejected)\
-#aspect_ratio_range->how wide the shape is compared to its height, removes things that are the wrong shape
+# min_flag_area_ratio filters tiny blobs using a fraction of the image area.
+# This is a noise filter, not a measurement of the flag's physical size.
+# aspect_ratio_range can be None when the flag's proportions are unknown.
 
 def load_settings(path="settings.json"):
     """Load and validate settings from JSON."""
@@ -51,12 +51,12 @@ def find_largest_blob(mask, settings):
         cv2.CHAIN_APPROX_SIMPLE
     )
 
-    # Scale the noise threshold with the image resolution.
+    # Use an area ratio so the noise threshold scales with image resolution.
     image_height, image_width = mask.shape[:2]
     image_area = image_height * image_width
     min_area = settings["min_flag_area_ratio"] * image_area
 
-    # None means no restriction on flag proportions.
+    # Keep shape filtering optional because the flag proportions are unknown.
     aspect_limits = settings.get("aspect_ratio_range")
 
     valid_blobs = []
@@ -86,6 +86,7 @@ def find_largest_blob(mask, settings):
 
     return max(valid_blobs, key=lambda blob: blob["area"])
 
+    # Legacy fixed-pixel filtering below is unreachable after the return above.
     min_area=settings["min_flag_area"] #limits from settings
     min_ar, max_ar=settings["aspect_ratio_range"]
     valid_blobs=[] #empty list, if shape passes the checks it will be saved here
@@ -111,7 +112,7 @@ def find_largest_blob(mask, settings):
     return max(valid_blobs, key=lambda blob: blob["area"]) #return the biggest blob/ thes survivor with the biggest area
 #lambda blob: blob["area"] tells max to compare blobs by their area 
 
-def detect_flag(frame, settings, target_color=None): # was def detect_flag(frame,settings):
+def detect_flag(frame, settings, target_color=None):
     """Detects flag color, bounding box, area, and center."""
 #blur first to smooth out camera noise
     blur_ksize=settings.get("blur_kernel_size", 5)
@@ -122,7 +123,7 @@ def detect_flag(frame, settings, target_color=None): # was def detect_flag(frame
 #variables that will hold the winning color and its blob
     best_color=None
     best_blob=None
-#try every color from settings file 
+    # None searches all profiles; a selected target skips the other colors.
     for color_name, ranges in settings["colors"].items():
         if target_color is not None and color_name != target_color:
             continue
@@ -181,6 +182,48 @@ class FlagStabilizer:
             }
         return {"confirmed": False}
 
+def open_camera(url):
+    # Set timeouts here because these options apply when opening the stream.
+    # Allow 5 seconds to connect and 8 seconds for slow video reads.
+    return cv2.VideoCapture(
+        url,
+        cv2.CAP_FFMPEG,  # This backend supports the timeout options below.
+        [
+            cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, 5000,
+            cv2.CAP_PROP_READ_TIMEOUT_MSEC, 8000,
+        ],
+    )
+
+def reconnect_camera(url, max_attempts=5):
+    # Limit attempts for each recovery cycle instead of retrying forever.
+    for attempt in range(1, max_attempts + 1):
+        # Check q between attempts; opening or reading can still wait for a timeout.
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            return None
+
+        print(f"[INFO] Reconnecting ({attempt}/{max_attempts})...")
+        cap = open_camera(url)
+
+        # A stream must provide a frame before we call the recovery successful.
+        if cap.isOpened():
+            ok, first_frame = cap.read()
+            if ok and first_frame is not None:
+                print("[INFO] Camera reconnected.")
+                return cap
+
+        # Close failed captures before trying another connection.
+        cap.release()
+
+        if attempt < max_attempts:
+            # Pause between attempts while allowing q to cancel.
+            if cv2.waitKey(2000) & 0xFF == ord('q'):
+                return None
+
+    print("[ERROR] Reconnection attempts exhausted.")
+    # None tells main that no working capture was recovered.
+    return None
+
+
 def main():
     try:
         settings = load_settings()
@@ -188,33 +231,59 @@ def main():
         print(f"[ERROR] {e}")
         return
 
-    cap=cv2.VideoCapture("http://192.168.1.103:81/stream") # we should put the URI of straming adress here ex:"http://192.168.1.107:81/stream"
+    # Update this IP if the camera reports a new address in Serial Monitor.
+    camera_url = "http://192.168.1.100:81/stream"
+    cap = open_camera(camera_url)
+
     if not cap.isOpened():
         print("[ERROR] Could not open camera.")
+        cap.release()
         return
-
     stabilizer=FlagStabilizer(required_consecutive_frames=4) #onlu trust a detection after 4 frames in a row
     print("[INFO] Pure Flag Vision Module Running. Press 'q' to Quit.")
 
-    max_consecutive_failures=30 #30 failed frame max
+    max_consecutive_failures=30 # Failed-read count before reopening, not seconds.
     failure_count=0
+    # c sets this name; keep it during recovery so the target color stays selected.
     target_color = None
+    # Default status-image size; use the real frame shape once video arrives.
+    last_frame_shape = (240, 320, 3)
 
-    while True: #runs oncer per camera frame
+    while True: # One iteration per attempted camera read.
         ret, frame=cap.read() #ret=true if a frame was grabbed 
         if not ret:
+            # A failed read breaks the sequence: require four new detections.
             stabilizer = FlagStabilizer(required_consecutive_frames=4)
             failure_count+=1
             print(f"[WARN] Failed to grab frame ({failure_count}/{max_consecutive_failures}). Retrying...")
-            if failure_count >= max_consecutive_failures:
-                print("[ERROR] Camera feed lost permanently. Exiting program.")
+
+            # Clear the old detection while the stream is unavailable.
+            offline_frame = np.zeros(last_frame_shape, dtype=np.uint8)
+            cv2.putText(
+                offline_frame, "Camera unavailable", (20, 40),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2
+            )
+            cv2.imshow("Flag Vision Module", offline_frame)
+            if cv2.waitKey(100) & 0xFF == ord('q'):
                 break
-            #wait a moment
-            time.sleep(0.1)
+
+            if failure_count >= max_consecutive_failures:
+                print("[WARN] Camera reads failed. Reconnecting...")
+                # Release the old stream before opening its replacement.
+                cap.release()
+                recovered_cap = reconnect_camera(camera_url)
+                if recovered_cap is None:
+                    # Recovery failed or q was pressed; stop without using None.
+                    print("[INFO] Camera recovery stopped. Exiting.")
+                    break
+                cap = recovered_cap
+                # Resume with a fresh failure count and reset confirmation.
+                failure_count = 0
             continue
         
         failure_count=0
-#look for a flag in this single frame
+        last_frame_shape = frame.shape
+        # Keep a clean copy so calibration does not sample drawn boxes or text.
         calibration_frame = frame.copy()  
         raw_detection=detect_flag(frame, settings , target_color)
 #confirm if it was seen several frames in a row
@@ -244,6 +313,8 @@ def main():
         if key == ord('q'):
             break
         elif key == ord('c'):
+            # Select a sample from a still image using the existing color profiles.
+            # This shortcut does not calculate new HSV limits or save settings.
             roi = cv2.selectROI(
                 "Calibration sample",
                 calibration_frame,
@@ -256,15 +327,19 @@ def main():
             x, y, w, h = map(int, roi)
 
             if w > 0 and h > 0:
+                # Only the selected region should decide the target color.
                 sample = calibration_frame[y:y+h, x:x+w]
                 sample_hsv = cv2.cvtColor(
                     sample, cv2.COLOR_BGR2HSV
                 )
 
+                # Prepare HSV pixels for the count; range estimation is still pending.
                 calibration_pixels = sample_hsv.reshape(-1, 3)
+                # Search all profiles here so c can replace an earlier color choice.
                 sample_result = detect_flag(sample, settings)
 
                 if sample_result["detected"]:
+                    # Later frames are checked only against this color profile.
                     target_color = sample_result["color"]
                     print(f"[INFO] Target color locked: {target_color}")
                 else:
@@ -280,12 +355,13 @@ def main():
             else:
                 print("[INFO] Calibration cancelled.")
 
+            # Reset confirmation after selecting, rejecting, or cancelling a sample.
             stabilizer = FlagStabilizer(
                 required_consecutive_frames=4
             )
 
         elif key == ord('r'):
-               
+            # Reload saved JSON settings without restarting the program.
             try:
                 updated_settings = load_settings()
 
@@ -294,8 +370,10 @@ def main():
                         "Missing 'min_flag_area_ratio' in settings.json"
                     )
 
+                # Replace settings only after loading and the current checks succeed.
                 settings = updated_settings
 
+                # Require new detections using the reloaded settings.
                 stabilizer = FlagStabilizer(
                     required_consecutive_frames=4
                 )
@@ -307,6 +385,7 @@ def main():
                     f"[WARN] Reload failed; keeping previous settings: {e}"
                 )
 
+    # Close the active capture and preview windows when the loop ends.
     cap.release()
     cv2.destroyAllWindows()
 
