@@ -2,7 +2,36 @@
 
 An OpenCV development prototype for detecting a colored flag from an ESP32-CAM video stream. It reports the detected color and image position and draws a bounding box and center marker.
 
-This README documents the original detector and the improvements added during camera integration and testing. The ESP32-CAM streams video; the Python detector currently runs on a computer. Robot communication, motor control, and standalone deployment are still pending.
+This README documents the original detector and the improvements added during camera integration and testing. The ESP32-CAM streams video; the Python detector currently runs on a computer. Terminal announcements and optional USB Serial messages are implemented. Wi-Fi communication, the ESP32 LCD receiver, motor control, and standalone deployment are still pending.
+
+## Project structure
+
+```text
+UGV-Computer-Vision-/
+├── flag_detector_color_identification.py  # Main loop, preview and keyboard controls
+├── settings.json                         # Shared HSV profiles and filters
+├── vision/
+│   ├── __init__.py
+│   ├── camera.py                         # Stream opening with OpenCV defaults
+│   ├── detector.py                       # Masks, blobs and four-frame confirmation
+│   ├── calibration.py                    # Sample selection and color lock
+│   └── settings.py                       # JSON loading and existing validation
+├── communication/
+│   ├── __init__.py
+│   ├── lcd_announcer.py                  # Once-per-event output; optional USB Serial
+│   └── wifi_client.py                    # Placeholder; Wi-Fi sender not implemented
+├── docs/
+│   ├── screenshots/
+│   └── control_interface.md              # Proposed Wi-Fi message contract
+├── requirements.txt
+├── tests/test_lcd_announcer.py            # Offline announcement and cleanup checks
+├── README.md
+└── .gitignore
+```
+
+Keep launching the original main filename. It imports helpers from `vision`; do not launch the helper files individually. Settings load from this project's `settings.json` even when the terminal is in another directory. Explicit paths passed to `load_settings(path)` are still supported.
+
+The reorganization removes an unused `time` import, an unreachable legacy fixed-pixel filter, and an extra HSV conversion/reshape used only to count sample pixels. The pixel count now comes directly from the sample dimensions. Detection thresholds and confirmation rules are retained. The optional `r` reload shortcut, automatic reconnection and explicit camera timeout settings were subsequently removed by user request; `c` and `q` remain available. `communication/wifi_client.py` is a documented placeholder and sends nothing; see [the proposed control interface](docs/control_interface.md).
 
 ## Detection pipeline
 
@@ -22,10 +51,10 @@ Before a target is selected, the detector compares all configured colors. After 
 | Minimum area as a fraction of image area | Make the noise threshold scale with resolution rather than use a fixed pixel count. |
 | Optional aspect-ratio filter | Allow testing without assuming fixed flag proportions. |
 | Adjusted red HSV thresholds and 3×3 processing kernels | Recover the dim, low-saturation practice target that the original settings missed; retain smaller details during cleanup. |
-| `r`: reload settings | Apply saved JSON changes during a run and restart detection confirmation. |
 | `c`: select a sample and lock its recognized color | Restrict detection to the color chosen from the camera image. |
 | Normalized horizontal error display | Show whether the confirmed flag is left, centered, or right, using the same scale at different image widths. |
-| Capture timeouts and bounded reconnection | Reset confirmation on failed reads, clear the old detection display, and attempt to restore an interrupted stream. |
+| Camera failure handling | Clear old detections and exit after 30 consecutive failed reads; automatic reconnection and explicit timeouts have been removed. |
+| Flag-color announcement | Announce confirmed colors once per event in the terminal; optionally send the teammate's LCD message over USB Serial. |
 
 The existing four-detection stabilizer is retained. It confirms a color after four consecutive successful same-color results, rather than after four seconds. It does not verify that those results belong to the same physical object.
 
@@ -47,11 +76,11 @@ The `c` workflow lets the operator select a region inside the intended flag. The
 
 ### What calibration currently does
 
-- `r` reloads HSV ranges and other settings that the operator has edited and saved manually.
-- `c` captures a clean frame, opens a rectangular sample selector, prepares its HSV pixels, and identifies a color using the existing profiles.
+- Edit and save `settings.json`, then restart Python to apply changed HSV ranges or other settings. The `r` reload shortcut has been removed.
+- `c` captures a clean frame, opens a rectangular sample selector, counts its pixels, and identifies a color using the existing profiles.
 - A recognized sample sets the target color for the current session.
 - An unrecognized or cancelled sample preserves the previous selection. If no target was selected previously, all-color detection continues.
-- The stabilizer resets after the sample-selection workflow and after a successful settings reload.
+- The stabilizer resets after the sample-selection workflow and after failed camera reads.
 
 **The current `c` implementation does not calculate new HSV thresholds or save calibration to JSON.** Automatic range estimation is a future step. A sample outside the existing profiles can still be unrecognized, and overlapping profiles can produce an incorrect color label.
 
@@ -62,22 +91,47 @@ Requirements: an ESP32-CAM with CameraWebServer firmware already running, a comp
 From the repository directory, install the Python packages into the environment you intend to use:
 
 ```powershell
-python -m pip install opencv-python numpy
+python -m pip install -r requirements.txt
 ```
 
-Check the camera's current IP address in the Arduino Serial Monitor at 115200 baud after reset. Update the `cv2.VideoCapture(...)` URL in `flag_detector_color_identification.py` if the address has changed. Its format is:
+Check the camera's current IP address in the Arduino Serial Monitor at 115200 baud after reset. Update `camera_url` in `flag_detector_color_identification.py` if the address has changed. Its format is:
 
 ```text
 http://<camera-ip>:81/stream
 ```
 
-Close any browser camera stream before starting the detector. Then run from the repository directory so the current relative `settings.json` path resolves correctly:
+Close any browser camera stream before starting the detector. From the repository directory, run:
 
 ```powershell
 python flag_detector_color_identification.py
 ```
 
-A microSD card is not required for this live-stream workflow. Dependency versions have not yet been pinned for reproducible installation.
+A microSD card is not required for this live-stream workflow. `requirements.txt` pins the GUI-enabled OpenCV and NumPy versions from the current development environment. A fresh installation from these pins has not yet been tested. Keep the main file and both packages together when sharing the project.
+
+## Flag announcement and optional LCD output
+
+Adapted from the teammate's `Updated` commit (`1545dff`). By default, a confirmed flag prints:
+
+```text
+FLAG DETECTED
+COLOR: RED
+```
+
+Repeated confirmed detections of the same color produce no additional announcement. Ten consecutive unconfirmed updates allow another announcement; failed camera reads also count. This threshold counts updates, not seconds. A different confirmed color or a new `c` selection attempt also permits a new announcement. Confirmation still requires four detections.
+
+`USE_ESP32 = False` in the main file keeps hardware output disabled. Terminal mode does not need pySerial. For a separate USB bench test, install `python -m pip install pyserial`, set `LCD_SERIAL_PORT` to the control ESP32's actual port and enable `USE_ESP32`. This sends `FLAG_DETECTED,RED\n` at 115200 baud; the ESP32 firmware must parse it and update the physical LCD. `COM5` is only a placeholder. USB Serial is not the planned Wi-Fi transport.
+
+The optional Serial port has one-second read/write limits and a two-second boot wait; these do not restore camera timeout options. Serial setup errors stop startup with an error. A write failure prints a warning, closes the port and continues with terminal announcements. Camera and Serial resources are closed on exit.
+
+No target-lost message is sent and the LCD is not cleared by this Python feature. It is an announcement channel, not a continuous steering signal or motor watchdog. Hardware display behavior has not been tested.
+
+Run the offline checks from the repository directory:
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+Serial API reference: [pySerial documentation](https://pyserial.readthedocs.io/en/latest/pyserial_api.html).
 
 ## Keyboard controls
 
@@ -86,7 +140,6 @@ Use an English keyboard layout and focus the **Flag Vision Module** window befor
 | Key | Action |
 | --- | --- |
 | `q` | Exit the detector. |
-| `r` | Reload the saved `settings.json`; reset confirmation after success. |
 | `c` | Open the **Calibration sample** window and choose a target-color sample. |
 
 To select a sample:
@@ -104,9 +157,9 @@ To select a sample:
 
 6. Wait for four subsequent successful detections of that color before expecting a confirmed box.
 
-The selector intentionally displays a still image. Press `c` again in the main video window to select a different target color. Restarting the program clears the selection. A settings reload retains the selected color name, while applying its newly loaded profile.
+The selector intentionally displays a still image. Press `c` again in the main video window to select a different target color. Restarting the program clears the selection. Settings are loaded at startup only. After changing `settings.json`, restart Python and select the target again if needed.
 
-If settings reload fails during parsing or the checks currently implemented, the handler prints a warning and keeps the previous settings. Validation is incomplete; not every malformed value is rejected before detection resumes.
+If settings cannot be loaded at startup, the program prints an error and exits. Validation is incomplete; not every malformed value is rejected before detection starts.
 
 ## Horizontal position for control integration
 
@@ -118,15 +171,13 @@ For a confirmed detection, the preview displays `X error`. The image midpoint is
 
 This value is currently calculated and displayed only for confirmed detections. It is not yet transmitted to the control ESP32 or used to command motors. The control team must agree on communication and steering behavior before integration.
 
-## Camera failure and recovery
+## Camera failure handling
 
-The FFmpeg capture uses a 5-second opening timeout and an 8-second reading timeout. These settings limit individual I/O waits; they do not prove that a received frame is fresh.
+The stream opens once with `cv2.VideoCapture(url)` using OpenCV defaults. There are no application-configured opening/read timeouts and no automatic reconnection. Backend defaults may still apply; a blocked opening or read has no application-defined time limit and can delay `q` or error handling.
 
-On a failed read, the detector resets confirmation and replaces the last detection image with a `Camera unavailable` status. After 30 consecutive failed reads, it releases the old capture and makes up to five reconnection attempts. A successful attempt must both open the stream and read a frame. Failed captures are released, with a short wait between attempts.
+When a read returns failure, confirmation resets and the preview replaces the old detection with `Camera unavailable`. After 30 consecutive failed reads, the program exits and releases the capture. The threshold counts failed reads, not seconds. `q` is checked after reads return, including during the failed-read wait.
 
-Successful recovery retains the selected target-color name and requires four subsequent successful same-color detections before confirmation. Exhausting the attempts exits the program. `q` is checked during failed-read waits and between reconnection attempts; opening/reading I/O can delay its response until the configured timeout.
-
-The initial startup still exits if the first opening attempt fails. Reconnection uses the same configured IP address; if the camera receives a different address, update `camera_url`. Real camera-disconnection testing remains pending.
+Restart Python to open a new stream after a connection failure. If the camera's IP changes, update `camera_url` first. A temporary failed read followed by successful reads on the same capture can still recover naturally, but the application does not reopen it. Four new same-color detections are required after a failed read.
 
 ## Current settings
 
@@ -183,12 +234,14 @@ Following the instruction to remove the red paper while retaining the running se
 | Check | Evidence / status |
 | --- | --- |
 | ESP32-CAM input | User confirmed moving live video after correcting the camera IP. |
+| Announcement integration | Nine offline tests passed on 2026-10-18: repeat suppression, ten-update rearming, color/sample changes, exact Serial bytes, optional setup/cleanup, write-failure fallback, main-loop failed reads and real detection on synthetic frames. No physical LCD or USB device test performed. |
 | Dim red target after manual HSV changes | User reported successful detection. |
-| `r` keyboard shortcut | User reported the shortcut works; edited-value and invalid-file scenarios still need separate recorded tests. |
+| Historical `r` shortcut | Previously reported working; removed by user request. Restart Python to apply saved settings. |
 | Current source and detection helpers | Offline check on 2026-10-17: source parsed; solid synthetic red, green, blue, and yellow samples recognized. |
+| Folder reorganization and cleanup | Offline regression check on 2026-10-18: 70 synthetic detection comparisons matched the committed detector; simulated selection, cancellation, rejection and replacement passed; full-loop previews, logs and capture lifecycle matched through `c`, `r`, failed reads and recovery. Settings loaded correctly from another working directory. No live camera test was performed for this refactor. |
 | Color restriction logic | Offline check on 2026-10-17: selected red ignored a larger blue region; removing red produced no detection. |
 | Confirmation logic | Offline check on 2026-10-17: confirmed on the fourth same-color detection and reset on a no-detection result. |
-| Failed-read reset and reconnection | Simulated main-loop checks on 2026-10-18 passed for recovery, selected-color retention, four new detections after recovery, a cleared offline display, five failed attempts, `q` cancellation, and capture cleanup. Live disconnection/recovery is still pending. |
+| Historical reconnection implementation (removed) | Simulated main-loop checks on 2026-10-18 passed for recovery, selected-color retention, four new detections after recovery, a cleared offline display, five failed attempts, `q` cancellation, and capture cleanup. These checks describe the removed implementation; current failure-exit behavior is tested separately. |
 | Live `c` sample-selection interface | User supplied a screenshot of the selector with a rectangle inside the red practice target. |
 | Live sample recognition and target-color lock | User supplied terminal evidence: `Target color locked: red` and `Selected 4536 calibration pixels.` |
 | Live red detection after sample selection | Screenshot reports red, contour area 3773, center (108, 113), with a dark blue-looking object below and no box on it. This is one observed scene. |
@@ -213,13 +266,12 @@ For each live test, record: test ID, lighting, resolution, selected color, targe
 
 - Estimate and validate new HSV ranges from samples, including circular red hue handling; add reviewed persistence to JSON.
 - Test lighting changes, multiple flag sizes, no flag, wrong colors, and same-color distractors. There is no measured accuracy score yet.
-- Improve settings validation and resolve the settings path relative to the script.
-- Remove the unreachable old area-filter code remaining after the new function's return.
-- Live-test camera disconnection and reconnection, including changed IP addresses, repeated interruptions, and shutdown during recovery. Add stale-frame detection and latency measurements; a stream that returns old frames can still appear readable.
+- Improve settings validation; the default settings path now resolves from the project directory.
+- Live-test camera loss, exit after failed reads, manual restart and changed IP addresses. Measure blocking and latency with backend defaults. Add stale-frame detection; a stream that returns old frames can still appear readable.
 - Agree the controller interface and confirm the allowed processing architecture. The current laptop prototype does not demonstrate standalone competition operation.
 - Integrate image-position output with control. The ultrasonic sensor, rather than apparent flag size, must provide the mission's distance measurement.
 
-Color selection is not physical-object tracking: another object matching the selected profile can still be detected. The detector supplies color and image position; robot communication, color announcement, and the 50 cm control task are not implemented here.
+Color selection is not physical-object tracking: another object matching the selected profile can still be detected. Terminal color announcement and optional Serial output are implemented; Wi-Fi control integration, the physical LCD receiver and the 50 cm control task remain pending.
 
 ## Recorded implementation commits
 
@@ -227,6 +279,6 @@ Color selection is not physical-object tracking: another object matching the sel
 | --- | --- |
 | `f721969` | Read ESP32-CAM video stream. |
 | `68d0dd8` | Adjust practice red settings and make size filters configurable. |
-| `cf36d2a` | Reload vision settings with the `r` key. |
+| `cf36d2a` | Historically added `r` settings reload; this shortcut has since been removed. |
 | `6fa884f` | Select a color sample and restrict detection to its recognized color. |
 | `45a544b` | Reset confirmation after a failed frame read. |
