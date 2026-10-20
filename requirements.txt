@@ -1,4 +1,4 @@
-# GUI-enabled OpenCV is needed for the preview and ROI selector.
+# GUI-enabled OpenCV is needed for the preview and q key.
 # These package versions match the current development environment.
 opencv-python==5.0.0.93
 numpy==2.5.4

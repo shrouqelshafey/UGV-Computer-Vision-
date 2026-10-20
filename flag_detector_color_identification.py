@@ -5,7 +5,6 @@ import numpy as np
 
 # Keep the application flow here; each module owns one responsibility.
 from vision.camera import open_camera
-from vision.calibration import select_target_color
 from vision.detector import FlagStabilizer, detect_flag
 from vision.settings import load_settings
 from communication.lcd_announcer import FlagAnnouncer
@@ -42,8 +41,6 @@ def main():
 
         max_consecutive_failures=30 # Failed-read count before exiting, not seconds.
         failure_count=0
-        # c sets the color profile used for the current session.
-        target_color = None
         # Default status-image size; use the real frame shape once video arrives.
         last_frame_shape = (240, 320, 3)
 
@@ -75,9 +72,8 @@ def main():
 
             failure_count=0
             last_frame_shape = frame.shape
-            # Keep a clean copy so calibration does not sample drawn boxes or text.
-            calibration_frame = frame.copy()
-            raw_detection=detect_flag(frame, settings , target_color)
+            # Identify the color automatically from all configured non-white profiles.
+            raw_detection = detect_flag(frame, settings)
     #confirm if it was seen several frames in a row
             stable_result=stabilizer.update(raw_detection)
             # Announce confirmed results once instead of printing every video frame.
@@ -119,14 +115,6 @@ def main():
 
             if key == ord('q'):
                 break
-            elif key == ord('c'):
-                # The calibration module selects a color without changing HSV settings.
-                target_color = select_target_color(
-                    calibration_frame, settings, target_color
-                )
-                # Any selection attempt requires four new detections.
-                stabilizer = FlagStabilizer(required_consecutive_frames=4)
-                announcer.reset()
 
     finally:
         # Release the camera, optional Serial port and windows on every exit path.

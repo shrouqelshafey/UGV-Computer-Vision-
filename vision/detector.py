@@ -73,7 +73,7 @@ def find_largest_blob(mask, settings):
     return max(valid_blobs, key=lambda blob: blob["area"])
 
 
-def detect_flag(frame, settings, target_color=None):
+def detect_flag(frame, settings):
     """Detects flag color, bounding box, area, and center."""
 #blur first to smooth out camera noise
     blur_ksize=settings.get("blur_kernel_size", 5)
@@ -84,10 +84,8 @@ def detect_flag(frame, settings, target_color=None):
 #variables that will hold the winning color and its blob
     best_color=None
     best_blob=None
-    # None searches all profiles; a selected target skips the other colors.
+    # Search all configured profiles; no operator-selected color is required.
     for color_name, ranges in settings["colors"].items():
-        if target_color is not None and color_name != target_color:
-            continue
         mask = build_mask(hsv, ranges, settings)
         blob=find_largest_blob(mask, settings)
 #mask is made first  to find the best flag shaped blob in that mask

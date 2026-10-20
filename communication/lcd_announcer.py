@@ -17,7 +17,9 @@ class FlagAnnouncer:
     def __init__(self, use_esp32=False, port="COM5", lost_frame_threshold=10):
         self.esp32 = None
         self.lost_frame_threshold = lost_frame_threshold
-        self.reset()
+        # Track announcements automatically without a manual selection/reset key.
+        self.last_announced_color = None
+        self.lost_frames = 0
         if use_esp32:
             # Terminal-only mode does not need the optional pySerial package.
             import serial
@@ -27,11 +29,6 @@ class FlagAnnouncer:
             self.esp32 = serial.Serial(port, 115200, timeout=1, write_timeout=1)
             # Allow the ESP32 to boot after opening its Serial port.
             time.sleep(2)
-
-    def reset(self):
-        # A new sample selection starts a new announcement event.
-        self.last_announced_color = None
-        self.lost_frames = 0
 
     def update(self, result):
         if not result["confirmed"]:

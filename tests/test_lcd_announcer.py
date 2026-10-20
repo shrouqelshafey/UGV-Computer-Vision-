@@ -38,13 +38,12 @@ class AnnouncementTests(unittest.TestCase):
         announcer.update(red)
         self.assertEqual(self.output.getvalue().count("COLOR: RED"), 2)
 
-    def test_color_change_and_sample_reset_allow_announcements(self):
+    def test_color_change_allows_a_new_announcement(self):
         announcer = FlagAnnouncer()
         announcer.update({"confirmed": True, "color": "red"})
         announcer.update({"confirmed": True, "color": "blue"})
-        announcer.reset()
         announcer.update({"confirmed": True, "color": "blue"})
-        self.assertEqual(self.output.getvalue().count("FLAG DETECTED"), 3)
+        self.assertEqual(self.output.getvalue().count("FLAG DETECTED"), 2)
 
     def test_serial_message_matches_teammates_receiver_format(self):
         port = MagicMock()
@@ -112,6 +111,28 @@ class AnnouncementTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 app.main()
         factory.return_value.close.assert_called_once()
+
+    def test_c_does_not_open_selector_or_interrupt_automatic_detection(self):
+        # Both colors must confirm automatically, even if the removed key is pressed.
+        red = app.np.full((240, 320, 3), 255, dtype=app.np.uint8)
+        red[40:120, 50:150] = (0, 0, 255)
+        blue = app.np.full((240, 320, 3), 255, dtype=app.np.uint8)
+        blue[40:120, 50:150] = (255, 0, 0)
+        capture = MagicMock()
+        capture.isOpened.return_value = True
+        capture.read.side_effect = [
+            (True, image.copy()) for image in [red] * 4 + [blue] * 4
+        ]
+        with patch.object(app, "open_camera", return_value=capture), patch.object(
+            app.cv2, "waitKey", side_effect=[ord("c")] + [-1] * 6 + [ord("q")]
+        ), patch.object(app.cv2, "selectROI") as selector, patch.object(
+            app.cv2, "imshow"
+        ), patch.object(app.cv2, "destroyAllWindows"):
+            app.main()
+        selector.assert_not_called()
+        self.assertEqual(self.output.getvalue().count("COLOR: RED"), 1)
+        self.assertEqual(self.output.getvalue().count("COLOR: BLUE"), 1)
+        capture.release.assert_called_once()
 
 
 if __name__ == "__main__":

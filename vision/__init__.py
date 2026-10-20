@@ -1,1 +1,1 @@
-"""Camera input, flag detection, settings and sample selection."""
+"""Camera input, automatic flag-color detection and settings."""

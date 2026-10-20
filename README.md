@@ -14,7 +14,6 @@ UGV-Computer-Vision-/
 │   ├── __init__.py
 │   ├── camera.py                         # Stream opening with OpenCV defaults
 │   ├── detector.py                       # Masks, blobs and four-frame confirmation
-│   ├── calibration.py                    # Sample selection and color lock
 │   └── settings.py                       # JSON loading and existing validation
 ├── communication/
 │   ├── __init__.py
@@ -24,14 +23,14 @@ UGV-Computer-Vision-/
 │   ├── screenshots/
 │   └── control_interface.md              # Proposed Wi-Fi message contract
 ├── requirements.txt
-├── tests/test_lcd_announcer.py            # Offline announcement and cleanup checks
+├── tests/                                # Offline detection, announcement and loop checks
 ├── README.md
 └── .gitignore
 ```
 
 Keep launching the original main filename. It imports helpers from `vision`; do not launch the helper files individually. Settings load from this project's `settings.json` even when the terminal is in another directory. Explicit paths passed to `load_settings(path)` are still supported.
 
-The reorganization removes an unused `time` import, an unreachable legacy fixed-pixel filter, and an extra HSV conversion/reshape used only to count sample pixels. The pixel count now comes directly from the sample dimensions. Detection thresholds and confirmation rules are retained. The optional `r` reload shortcut, automatic reconnection and explicit camera timeout settings were subsequently removed by user request; `c` and `q` remain available. `communication/wifi_client.py` is a documented placeholder and sends nothing; see [the proposed control interface](docs/control_interface.md).
+The reorganization removed an unused `time` import, an unreachable legacy fixed-pixel filter, and an extra HSV conversion/reshape that was used only to count sample pixels. The optional `r` reload shortcut, automatic reconnection, explicit camera timeout settings and `c` sample-selection feature were subsequently removed by user request. `q` is the only keyboard control. `communication/wifi_client.py` is a documented placeholder and sends nothing; see [the proposed control interface](docs/control_interface.md).
 
 ## Detection pipeline
 
@@ -41,7 +40,15 @@ ESP32-CAM stream → Gaussian blur → HSV conversion → color masks
 → four consecutive same-color detections → displayed result
 ```
 
-Before a target is selected, the detector compares all configured colors. After a successful sample selection, it checks only the selected color profile. Within that profile it still selects the largest valid blob.
+Every frame is checked against all configured color profiles. The detector selects the largest valid blob across those profiles; there is no manual sample selection or target-color lock.
+
+## Lab setup: non-white flag on a white sheet
+
+The competition scene is a lab with a white sheet and a flag that cannot be white. The program compares the configured red, blue, green, yellow, orange and purple profiles automatically. No calibration key or sample selection is required or available.
+
+Removed the `white` profile from `settings.json` because the detector chooses the largest valid region. With that profile enabled, a large white sheet can beat a smaller colored flag and can be confirmed even when no flag is present. The four-detection stabilizer cannot correct a consistently selected background. The non-white HSV ranges are unchanged.
+
+Synthetic regression tests check all six supported colors on white, a blank white sheet, and removal of a previously confirmed red flag. These tests do not establish real-camera performance under lab lighting. Test the actual flag at near/far positions and with shadows before the run. White flags are intentionally unsupported in this configuration, and another object matching a configured color can still become a candidate. Restart Python after changing the settings.
 
 ## What changed
 
@@ -51,14 +58,16 @@ Before a target is selected, the detector compares all configured colors. After 
 | Minimum area as a fraction of image area | Make the noise threshold scale with resolution rather than use a fixed pixel count. |
 | Optional aspect-ratio filter | Allow testing without assuming fixed flag proportions. |
 | Adjusted red HSV thresholds and 3×3 processing kernels | Recover the dim, low-saturation practice target that the original settings missed; retain smaller details during cleanup. |
-| `c`: select a sample and lock its recognized color | Restrict detection to the color chosen from the camera image. |
+| Automatic comparison of six non-white profiles | Identify the flag color on a white sheet without manual sample selection. |
 | Normalized horizontal error display | Show whether the confirmed flag is left, centered, or right, using the same scale at different image widths. |
 | Camera failure handling | Clear old detections and exit after 30 consecutive failed reads; automatic reconnection and explicit timeouts have been removed. |
 | Flag-color announcement | Announce confirmed colors once per event in the terminal; optionally send the teammate's LCD message over USB Serial. |
 
 The existing four-detection stabilizer is retained. It confirms a color after four consecutive successful same-color results, rather than after four seconds. It does not verify that those results belong to the same physical object.
 
-## Why we added calibration controls
+## Historical color-threshold and calibration work
+
+The following problems explain earlier development decisions. The manual `c` sample-selection feature has now been removed; only the adjusted HSV settings and automatic detection remain active.
 
 ### Problem 1: a red target was visible but not detected
 
@@ -72,17 +81,15 @@ These are starting values for our tested setup, not universal red thresholds. Li
 
 The original detector compared all configured colors and selected the largest valid blob. A larger object matching another color profile could therefore become the reported result.
 
-The `c` workflow lets the operator select a region inside the intended flag. The existing detector identifies a configured color in that region, and subsequent frames are checked only against that color profile. If the selected color disappears, the program searches instead of switching to another configured color.
+An earlier `c` workflow let the operator select a region inside the intended flag. The detector identified a configured color in that region, and subsequent frames were checked only against that color profile. This feature was removed because the competition run requires automatic detection without manual calibration. The current program checks all six non-white profiles on every frame, so colored distractors can still win if their valid region is larger than the flag.
 
-### What calibration currently does
+### Current settings workflow
 
 - Edit and save `settings.json`, then restart Python to apply changed HSV ranges or other settings. The `r` reload shortcut has been removed.
-- `c` captures a clean frame, opens a rectangular sample selector, counts its pixels, and identifies a color using the existing profiles.
-- A recognized sample sets the target color for the current session.
-- An unrecognized or cancelled sample preserves the previous selection. If no target was selected previously, all-color detection continues.
-- The stabilizer resets after the sample-selection workflow and after failed camera reads.
+- There is no sample selector, selected-color state or `c` handler.
+- The stabilizer resets after a missing detection or failed camera read.
 
-**The current `c` implementation does not calculate new HSV thresholds or save calibration to JSON.** Automatic range estimation is a future step. A sample outside the existing profiles can still be unrecognized, and overlapping profiles can produce an incorrect color label.
+The removed selector chose an existing profile; it never calculated new HSV thresholds or saved calibration to JSON. The current detector also uses fixed configured profiles. A flag outside those ranges can be missed, and overlapping profiles can produce an incorrect color label.
 
 ## Setup and run
 
@@ -117,7 +124,7 @@ FLAG DETECTED
 COLOR: RED
 ```
 
-Repeated confirmed detections of the same color produce no additional announcement. Ten consecutive unconfirmed updates allow another announcement; failed camera reads also count. This threshold counts updates, not seconds. A different confirmed color or a new `c` selection attempt also permits a new announcement. Confirmation still requires four detections.
+Repeated confirmed detections of the same color produce no additional announcement. Ten consecutive unconfirmed updates allow another announcement; failed camera reads also count. This threshold counts updates, not seconds. A different confirmed color also permits a new announcement. Confirmation still requires four detections.
 
 `USE_ESP32 = False` in the main file keeps hardware output disabled. Terminal mode does not need pySerial. For a separate USB bench test, install `python -m pip install pyserial`, set `LCD_SERIAL_PORT` to the control ESP32's actual port and enable `USE_ESP32`. This sends `FLAG_DETECTED,RED\n` at 115200 baud; the ESP32 firmware must parse it and update the physical LCD. `COM5` is only a placeholder. USB Serial is not the planned Wi-Fi transport.
 
@@ -140,24 +147,8 @@ Use an English keyboard layout and focus the **Flag Vision Module** window befor
 | Key | Action |
 | --- | --- |
 | `q` | Exit the detector. |
-| `c` | Open the **Calibration sample** window and choose a target-color sample. |
 
-To select a sample:
-
-1. Place the target in the actual operating lighting.
-2. Press `c` in the video window.
-3. Drag a rectangle inside one color on the target. Exclude the background, edges, deep shadows, and strong glare.
-4. Press Enter to confirm, or press `c` in the selector to cancel.
-5. Check the terminal for the result. Example output, with a sample-dependent pixel count:
-
-```text
-[INFO] Target color locked: red
-[INFO] Selected 2000 calibration pixels.
-```
-
-6. Wait for four subsequent successful detections of that color before expecting a confirmed box.
-
-The selector intentionally displays a still image. Press `c` again in the main video window to select a different target color. Restarting the program clears the selection. Settings are loaded at startup only. After changing `settings.json`, restart Python and select the target again if needed.
+Detection starts automatically. `c` does not open a selector or change detection behavior. Settings are loaded at startup only; restart Python after changing `settings.json`.
 
 If settings cannot be loaded at startup, the program prints an error and exits. Validation is incomplete; not every malformed value is rejected before detection starts.
 
@@ -201,13 +192,13 @@ Current practice red profile, inside `colors` in `settings.json`:
 
 Red uses two intervals because its hue crosses the ends of OpenCV's standard 8-bit hue range, 0–179. Red is a practice color; the competition color must not be assumed in advance.
 
-## Screenshots and live evidence
+## Historical screenshots and live evidence
 
-The following four user-supplied screenshots document the sample selection, recognition, detection, and target-absent stages. Images are stored under `docs/screenshots/` beside this README. These individual captures do not establish continuous performance or a measured accuracy score.
+The following four user-supplied screenshots document the earlier sample-selection implementation, which has been removed. They are retained as historical evidence, not instructions or validation of the current automatic mode. Images are stored under `docs/screenshots/` beside this README. These individual captures do not establish continuous performance or a measured accuracy score.
 
 ### 1. Selecting a calibration sample
 
-The operator opened the **Calibration sample** window and drew a blue selection rectangle inside the red practice target, excluding the surrounding background. The still image allows a sample to be selected before confirmation with Enter. This capture documents the selection interface; it does not yet establish that the color was recognized or locked.
+The operator opened the **Calibration sample** window and drew a blue selection rectangle inside the red practice target, excluding the surrounding background. The still image allowed a sample to be selected before confirmation with Enter. This capture documents the removed selection interface; it does not establish that the color was recognized or locked.
 
 ![Selecting a region inside the red practice target with the c key](docs/screenshots/02-calibration-selection.png)
 
@@ -219,7 +210,7 @@ After confirming the sample, the terminal reported `Target color locked: red` an
 
 ### 3. Selected target with a different-colored distractor
 
-After the red sample was selected, the live display reported `Flag: red | Area: 3773` and `Center: (108, 113)`. The green bounding box surrounds the red paper, while a dark blue-looking object is visible below it without a detection box. This documents the displayed result for this scene. The image does not establish that the other object matches a configured profile or has a larger valid contour; the stronger larger-distractor test remains pending.
+After the red sample was selected, the live display reported `Flag: red | Area: 3773` and `Center: (108, 113)`. The green bounding box surrounds the red paper, while a dark blue-looking object is visible below it without a detection box. This documents the displayed result for this earlier mode. The image does not establish that the other object matches a configured profile or has a larger valid contour, and it does not validate distractor behavior in current automatic mode.
 
 ![Red paper detected at center 108, 113 with contour area 3773 and a dark blue-looking object below](docs/screenshots/04-selected-color-only.png)
 
@@ -234,23 +225,25 @@ Following the instruction to remove the red paper while retaining the running se
 | Check | Evidence / status |
 | --- | --- |
 | ESP32-CAM input | User confirmed moving live video after correcting the camera IP. |
-| Announcement integration | Nine offline tests passed on 2026-10-18: repeat suppression, ten-update rearming, color/sample changes, exact Serial bytes, optional setup/cleanup, write-failure fallback, main-loop failed reads and real detection on synthetic frames. No physical LCD or USB device test performed. |
+| Non-white flags on white background | Offline regression tests on 2026-10-20 check six configured colors without sample selection, no confirmation on a blank white sheet, and loss of confirmation after target removal. Real-camera lab validation remains pending. |
+| Calibration removal and automatic detection | On 2026-10-20, all 13 offline tests passed. A main-loop check sent `c` on the first frame, confirmed red after four frames and blue after four more, and verified that no ROI selector was called. No live camera test was performed for this removal. |
+| Historical announcement integration | Nine offline tests passed on 2026-10-18: repeat suppression, ten-update rearming, color/sample changes, exact Serial bytes, optional setup/cleanup, write-failure fallback, main-loop failed reads and real detection on synthetic frames. The sample-change check describes the removed feature. No physical LCD or USB device test performed. |
 | Dim red target after manual HSV changes | User reported successful detection. |
 | Historical `r` shortcut | Previously reported working; removed by user request. Restart Python to apply saved settings. |
-| Current source and detection helpers | Offline check on 2026-10-17: source parsed; solid synthetic red, green, blue, and yellow samples recognized. |
-| Folder reorganization and cleanup | Offline regression check on 2026-10-18: 70 synthetic detection comparisons matched the committed detector; simulated selection, cancellation, rejection and replacement passed; full-loop previews, logs and capture lifecycle matched through `c`, `r`, failed reads and recovery. Settings loaded correctly from another working directory. No live camera test was performed for this refactor. |
-| Color restriction logic | Offline check on 2026-10-17: selected red ignored a larger blue region; removing red produced no detection. |
+| Historical source and detection helpers | Offline check on 2026-10-17: source parsed; solid synthetic red, green, blue, and yellow samples recognized in that version. |
+| Historical folder reorganization and cleanup | Offline regression check on 2026-10-18: 70 synthetic detection comparisons matched the committed detector; simulated selection, cancellation, rejection and replacement passed; full-loop previews, logs and capture lifecycle matched through `c`, `r`, failed reads and recovery. These controls and recovery describe earlier versions. Settings loaded correctly from another working directory. No live camera test was performed for this refactor. |
+| Historical color restriction logic (removed) | Offline check on 2026-10-17: selected red ignored a larger blue region; removing red produced no detection. Current automatic mode can select another configured color. |
 | Confirmation logic | Offline check on 2026-10-17: confirmed on the fourth same-color detection and reset on a no-detection result. |
 | Historical reconnection implementation (removed) | Simulated main-loop checks on 2026-10-18 passed for recovery, selected-color retention, four new detections after recovery, a cleared offline display, five failed attempts, `q` cancellation, and capture cleanup. These checks describe the removed implementation; current failure-exit behavior is tested separately. |
-| Live `c` sample-selection interface | User supplied a screenshot of the selector with a rectangle inside the red practice target. |
-| Live sample recognition and target-color lock | User supplied terminal evidence: `Target color locked: red` and `Selected 4536 calibration pixels.` |
-| Live red detection after sample selection | Screenshot reports red, contour area 3773, center (108, 113), with a dark blue-looking object below and no box on it. This is one observed scene. |
-| Selected target absent | User supplied a screenshot showing Searching / Stabilizing with no red paper or detection box visible. This supports the observed frame, not long-run false-positive performance. |
-| Larger valid different-color distractor | Stronger live evidence pending; the target-absent screenshot does not clearly show the other object. |
+| Historical live `c` sample-selection interface (removed) | User supplied a screenshot of the selector with a rectangle inside the red practice target. |
+| Historical live sample recognition and target-color lock (removed) | User supplied terminal evidence: `Target color locked: red` and `Selected 4536 calibration pixels.` |
+| Historical live red detection after sample selection | Screenshot reports red, contour area 3773, center (108, 113), with a dark blue-looking object below and no box on it. This is one observed scene from the earlier mode. |
+| Historical selected target absent | User supplied a screenshot showing Searching / Stabilizing with no red paper or detection box visible. This supports the observed frame in the earlier mode, not long-run false-positive performance or current automatic behavior. |
+| Distractors in current automatic mode | Live validation pending. Historical sample-selection screenshots do not establish current behavior; automatic mode chooses the largest valid region across all six profiles. |
 
-The offline checks exercised the current helper functions with synthetic images in a separate test environment. They do not establish real-camera accuracy or verify keyboard and ROI-window behavior.
+Offline checks use synthetic images and mocked camera or GUI operations. Earlier rows describe the implementation tested at that time. These checks do not establish real-camera accuracy or real GUI behavior.
 
-For each live test, record: test ID, lighting, resolution, selected color, target/distractor arrangement, steps, expected result, actual result, pass/fail, and evidence filename. Do not mark a case as passed until it has been run.
+For each live test, record: test ID, lighting, resolution, actual flag color, target/distractor arrangement, steps, expected result, actual result, pass/fail, and evidence filename. Do not mark a case as passed until it has been run.
 
 ## Other problems encountered
 
@@ -264,14 +257,13 @@ For each live test, record: test ID, lighting, resolution, selected color, targe
 
 ## Remaining work
 
-- Estimate and validate new HSV ranges from samples, including circular red hue handling; add reviewed persistence to JSON.
 - Test lighting changes, multiple flag sizes, no flag, wrong colors, and same-color distractors. There is no measured accuracy score yet.
 - Improve settings validation; the default settings path now resolves from the project directory.
 - Live-test camera loss, exit after failed reads, manual restart and changed IP addresses. Measure blocking and latency with backend defaults. Add stale-frame detection; a stream that returns old frames can still appear readable.
 - Agree the controller interface and confirm the allowed processing architecture. The current laptop prototype does not demonstrate standalone competition operation.
 - Integrate image-position output with control. The ultrasonic sensor, rather than apparent flag size, must provide the mission's distance measurement.
 
-Color selection is not physical-object tracking: another object matching the selected profile can still be detected. Terminal color announcement and optional Serial output are implemented; Wi-Fi control integration, the physical LCD receiver and the 50 cm control task remain pending.
+Color-based detection is not physical-object tracking: another object matching any configured profile can still be detected. Terminal color announcement and optional Serial output are implemented; Wi-Fi control integration, the physical LCD receiver and the 50 cm control task remain pending.
 
 ## Recorded implementation commits
 
@@ -280,5 +272,5 @@ Color selection is not physical-object tracking: another object matching the sel
 | `f721969` | Read ESP32-CAM video stream. |
 | `68d0dd8` | Adjust practice red settings and make size filters configurable. |
 | `cf36d2a` | Historically added `r` settings reload; this shortcut has since been removed. |
-| `6fa884f` | Select a color sample and restrict detection to its recognized color. |
+| `6fa884f` | Historically added sample selection and a recognized-color restriction; this feature has since been removed. |
 | `45a544b` | Reset confirmation after a failed frame read. |
