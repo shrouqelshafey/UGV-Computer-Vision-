@@ -1,6 +1,6 @@
 {
     "min_flag_area_ratio": 0.001,
-    "aspect_ratio_range": null,
+    "aspect_ratio_range": [0.5, 2.0],
     "kernel_size": 3,
     "blur_kernel_size": 3,
     "colors": {
