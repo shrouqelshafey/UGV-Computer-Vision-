@@ -1,276 +1,333 @@
-# UGV Computer Vision — ESP32-CAM Flag Detection
+# Computer Vision System Documentation
 
-An OpenCV development prototype for detecting a colored flag from an ESP32-CAM video stream. It reports the detected color and image position and draws a bounding box and center marker.
+UGV Project - Colored Flag Detection, Identification, and Frame Stabilization
 
-This README documents the original detector and the improvements added during camera integration and testing. The ESP32-CAM streams video; the Python detector currently runs on a computer. Terminal announcements and optional USB Serial messages are implemented. Wi-Fi communication, the ESP32 LCD receiver, motor control, and standalone deployment are still pending.
+## 1. Introduction
 
-## Project structure
+The UGV is designed to operate autonomously. It must search for a flag, identify its color, and then use the detected flag's position to help the control system guide the robot toward it.
 
-```text
-UGV-Computer-Vision-/
-├── flag_detector_color_identification.py  # Main loop, preview and keyboard controls
-├── settings.json                         # Shared HSV profiles and filters
-├── vision/
-│   ├── __init__.py
-│   ├── camera.py                         # Stream opening with OpenCV defaults
-│   ├── detector.py                       # Masks, blobs and four-frame confirmation
-│   └── settings.py                       # JSON loading and existing validation
-├── communication/
-│   ├── __init__.py
-│   ├── lcd_announcer.py                  # Once-per-event output; optional USB Serial
-│   └── wifi_client.py                    # Placeholder; Wi-Fi sender not implemented
-├── docs/
-│   ├── screenshots/
-│   └── control_interface.md              # Proposed Wi-Fi message contract
-├── requirements.txt
-├── tests/                                # Offline detection, announcement and loop checks
-├── README.md
-└── .gitignore
+The Computer Vision module is responsible for:
+
+- Detecting colored regions that could represent the flag.
+- Identifying the detected flag's color.
+- Filtering small regions and image noise.
+- Confirming detections across consecutive frames to reduce unstable results.
+- Calculating the flag's bounding box, center, and horizontal position relative to the center of the image.
+- Sending confirmed detection information to the announcement module so that the flag's color can be displayed on the LCD.
+
+## 2. Approach Selection: Classical Computer Vision Instead of Model Training
+
+### Why I chose this approach?
+
+I chose a classical computer vision approach using OpenCV and HSV color thresholding. The main idea is to detect the flag based on its color instead of training a model to recognize it from a dataset.
+
+The system follows these steps:
+
+1. Capture a frame from the ESP32-CAM.
+2. Apply Gaussian blur to reduce small image variations and noise.
+3. Convert the frame from BGR to HSV color space.
+4. Apply color thresholds using cv2.inRange() to create binary masks.
+5. Clean the masks using morphological operations.
+6. Find contours and filter them according to their area and, optionally, their aspect ratio.
+7. Select the largest valid blob across the configured colors.
+8. Confirm the detected color across consecutive frames.
+9. Calculate the bounding box, center, and normalized horizontal position.
+10. Pass the confirmed detection to the announcement module.
+
+This approach was more suitable for our current problem because the competition requirements make color-based detection a reasonable starting point. The target is expected to be a single, solid-color rectangular fabric flag attached to a vertical pole. The flag's color and size will be announced on competition day, so the system needs to support different colors without requiring a new trained model for each one.
+
+Classical computer vision offers several advantages for this situation:
+
+- No training dataset is required. I do not need to collect and label hundreds or thousands of images of the flag before the system can start detecting it.
+- The color thresholds are adjustable. When the actual flag color is known, the HSV ranges can be modified in the configuration file without changing the main detection algorithm.
+- The processing is relatively lightweight. The system uses basic image-processing operations instead of a computationally heavier deep learning model. This is useful when working with limited hardware and a low-cost camera.
+
+Training a model such as a YOLO detector could be useful if the system needed to recognize flags based on their shape, pole, context, or appearance under more complicated conditions.
+
+However, that would introduce additional requirements, including collecting representative training data, labeling images, training and evaluating the model, and determining whether the selected hardware can run the model efficiently.
+
+For the current project, I considered a configurable, classical approach more appropriate because it is simpler to implement, easier to modify on competition day, and better aligned with the available hardware and the expected target.
+
+This does not mean classical computer vision is always better than deep learning. The choice depends on the target, environment, computational resources, and required reliability. As my mentor, Fares, always says, it’s not a matter of right or wrong; it’s about what makes the most sense for what you’re working on right now.
+
+## 3. Main application
+
+The overall processing flow is:
+
+Camera frame → Gaussian blur → BGR-to-HSV conversion → Color segmentation → Morphological filtering → Contour detection → Blob filtering → Largest valid candidate → Consecutive-frame confirmation → Position calculation and announcement.
+
+## 4. Color Detection Using HSV and cv2.inRange()
+
+### Why HSV was used instead of BGR
+
+A major decision in the implementation was to perform color segmentation in HSV rather than directly in BGR.
+
+BGR represents each pixel using blue, green, and red intensity values. Although it is the default color format used by OpenCV when reading most color images, setting color thresholds directly in BGR can be difficult because the three channels change together as the lighting conditions change.
+
+HSV represents a pixel using three different properties:
+
+- Hue (H): Represents the type of color, such as red, green, blue, or yellow.
+- Saturation (S): Represents how strong or pure the color is.
+- Value (V): Represents brightness.
+
+Separating these properties makes it more convenient to define color ranges.
+
+HSV does not make color detection completely independent of lighting. Strong sunlight, shadows, camera exposure, reflections, and white balance can still change the measured values. However, it provides a more convenient representation for defining adjustable color thresholds.
+
+### How cv2.inRange() works
+
+The cv2.inRange() function is the main operation used to separate a target color from the rest of the image.
+
+It compares every pixel in the HSV image with a lower and an upper threshold. If all three HSV components fall within their corresponding ranges, the pixel is assigned a value of 255 (white).
+
+Otherwise, it is assigned a value of 0 (black).
+
+For example:
+
+```python
+lower = np.array([100, 150, 50])
+upper = np.array([140, 255, 255])
+mask = cv2.inRange(hsv_frame, lower, upper)
 ```
 
-Keep launching the original main filename. It imports helpers from `vision`; do not launch the helper files individually. Settings load from this project's `settings.json` even when the terminal is in another directory. Explicit paths passed to `load_settings(path)` are still supported.
+This example creates a mask for pixels whose Hue, Saturation, and Value fall within the specified ranges. These values are an example of a blue-color profile and may need adjustment for the actual camera and flag.
 
-The reorganization removed an unused `time` import, an unreachable legacy fixed-pixel filter, and an extra HSV conversion/reshape that was used only to count sample pixels. The optional `r` reload shortcut, automatic reconnection, explicit camera timeout settings and `c` sample-selection feature were subsequently removed by user request. `q` is the only keyboard control. `communication/wifi_client.py` is a documented placeholder and sends nothing; see [the proposed control interface](docs/control_interface.md).
+The resulting mask is a binary image. White pixels represent areas that satisfy the color conditions, while black pixels represent areas that do not. This representation makes it easier to find the connected regions that could correspond to the flag.
 
-## Detection pipeline
+## 5. Configuration Using settings.json
 
-```text
-ESP32-CAM stream → Gaussian blur → HSV conversion → color masks
-→ mask cleanup → contour filtering → largest valid blob
-→ four consecutive same-color detections → displayed result
+Instead of hard-coding every threshold inside the detection functions, I placed the main adjustable parameters in settings.json.
+
+This makes the system easier to maintain and test. I can adjust/add the corresponding HSV thresholds. The configuration also allows the minimum area ratio, aspect-ratio limits, blur kernel size, and morphology kernel size to be changed independently.
+
+This separation between the algorithm and its configuration makes the implementation more flexible and helps avoid unnecessary changes to the source code during testing.
+
+### Explanation of the settings
+
+#### min_flag_area_ratio: 0.001
+
+The minimum accepted contour area is calculated as a fraction of the total image area. The value 0.001 corresponds to 0.1% of the image area. A contour smaller than this threshold is rejected.
+
+Using an area ratio rather than a fixed number of pixels makes the threshold scale with the image resolution. For example, a 320 × 240 frame and a 640 × 480 frame will have different minimum contour areas even when the configured ratio is the same.
+
+This is useful because the camera resolution may change. However, it does not guarantee that the same physical flag will occupy the same proportion of the image at different distances.
+
+#### aspect_ratio_range: [0.5, 2.0]
+
+The aspect ratio is calculated as: width / height The candidate is accepted only when its aspect ratio is between 0.5 and 2.0, inclusive. This is an optional shape filter intended to reject some elongated or unusually shaped regions.
+
+#### kernel_size: 3
+
+This determines the size of the square kernel used for morphological filtering. A 3 × 3 kernel is used in the current configuration. A smaller kernel generally preserves more detail but may remove less noise. A larger kernel can clean larger imperfections, but it may also remove small parts of the flag or merge nearby regions.
+
+#### blur_kernel_size: 3
+
+This determines the size of the Gaussian blur kernel applied before color segmentation. A 3 × 3 kernel provides mild smoothing. Larger odd-sized kernels can suppress more noise but may also blur edges and small details.
+
+#### colors
+
+This section contains the HSV thresholds for every supported color. Each color has a first lower and upper bound. Colors that need two separate Hue intervals can also have lower2 and upper2 (like red).
+
+The detector checks all configured color profiles automatically.
+
+## 6. Functions and Methods Used in the Implementation
+
+### `build_mask(hsv_frame, color_ranges, settings)`
+
+This function creates a cleaned binary mask for a particular color.
+
+It first retrieves the morphology kernel size from the settings file and converts the lower and upper HSV bounds into NumPy arrays. It then calls cv2.inRange() to identify the pixels that belong to the configured color range. If a second range exists, the function creates a second mask and combines both masks using cv2.bitwise_or().
+
+Finally, it applies two morphological operations:
+
+#### Morphological opening
+
+```python
+mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
 ```
 
-Every frame is checked against all configured color profiles. The detector selects the largest valid blob across those profiles; there is no manual sample selection or target-color lock.
+It helps remove small isolated white regions that may have been incorrectly classified as the target color. For example, small colored specks caused by image noise may disappear after opening.
 
-## Lab setup: non-white flag on a white sheet
+#### Morphological closing
 
-The competition scene is a lab with a white sheet and a flag that cannot be white. The program compares the configured red, blue, green, yellow, orange and purple profiles automatically. No calibration key or sample selection is required or available.
-
-Removed the `white` profile from `settings.json` because the detector chooses the largest valid region. With that profile enabled, a large white sheet can beat a smaller colored flag and can be confirmed even when no flag is present. The four-detection stabilizer cannot correct a consistently selected background. The non-white HSV ranges are unchanged.
-
-Synthetic regression tests check all six supported colors on white, a blank white sheet, and removal of a previously confirmed red flag. These tests do not establish real-camera performance under lab lighting. Test the actual flag at near/far positions and with shadows before the run. White flags are intentionally unsupported in this configuration, and another object matching a configured color can still become a candidate. Restart Python after changing the settings.
-
-## What changed
-
-| Change | Purpose |
-| --- | --- |
-| ESP32-CAM MJPEG input instead of the laptop webcam | Process the robot camera's video. |
-| Minimum area as a fraction of image area | Make the noise threshold scale with resolution rather than use a fixed pixel count. |
-| Optional aspect-ratio filter | Allow testing without assuming fixed flag proportions. |
-| Adjusted red HSV thresholds and 3×3 processing kernels | Recover the dim, low-saturation practice target that the original settings missed; retain smaller details during cleanup. |
-| Automatic comparison of six non-white profiles | Identify the flag color on a white sheet without manual sample selection. |
-| Normalized horizontal error display | Show whether the confirmed flag is left, centered, or right, using the same scale at different image widths. |
-| Camera failure handling | Clear old detections and exit after 30 consecutive failed reads; automatic reconnection and explicit timeouts have been removed. |
-| Flag-color announcement | Announce confirmed colors once per event in the terminal; optionally send the teammate's LCD message over USB Serial. |
-
-The existing four-detection stabilizer is retained. It confirms a color after four consecutive successful same-color results, rather than after four seconds. It does not verify that those results belong to the same physical object.
-
-## Historical color-threshold and calibration work
-
-The following problems explain earlier development decisions. The manual `c` sample-selection feature has now been removed; only the adjusted HSV settings and automatic detection remain active.
-
-### Problem 1: a red target was visible but not detected
-
-During testing, a red practice target appeared dark and desaturated in the ESP32-CAM image. The original red profile required saturation `S >= 120`. A sampled region of the saved target image had saturation values around 53–68, so it fell outside that profile.
-
-Changing the minimum target size alone did not fix the miss. A diagnostic check showed that the loaded red profile still used `S = 120`. After editing the actual loaded `settings.json` to use a red saturation minimum of 45 and value minimum of 40, the user reported successful detection.
-
-These are starting values for our tested setup, not universal red thresholds. Lighting, exposure, camera color response, and the material all affect the recorded HSV values. Lowering thresholds can also admit unwanted background pixels, so negative tests are required.
-
-### Problem 2: the detector could choose a different color
-
-The original detector compared all configured colors and selected the largest valid blob. A larger object matching another color profile could therefore become the reported result.
-
-An earlier `c` workflow let the operator select a region inside the intended flag. The detector identified a configured color in that region, and subsequent frames were checked only against that color profile. This feature was removed because the competition run requires automatic detection without manual calibration. The current program checks all six non-white profiles on every frame, so colored distractors can still win if their valid region is larger than the flag.
-
-### Current settings workflow
-
-- Edit and save `settings.json`, then restart Python to apply changed HSV ranges or other settings. The `r` reload shortcut has been removed.
-- There is no sample selector, selected-color state or `c` handler.
-- The stabilizer resets after a missing detection or failed camera read.
-
-The removed selector chose an existing profile; it never calculated new HSV thresholds or saved calibration to JSON. The current detector also uses fixed configured profiles. A flag outside those ranges can be missed, and overlapping profiles can produce an incorrect color label.
-
-## Setup and run
-
-Requirements: an ESP32-CAM with CameraWebServer firmware already running, a computer with Python and a graphical desktop, OpenCV, NumPy, and network access to the camera.
-
-From the repository directory, install the Python packages into the environment you intend to use:
-
-```powershell
-python -m pip install -r requirements.txt
+```python
+mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 ```
 
-Check the camera's current IP address in the Arduino Serial Monitor at 115200 baud after reset. Update `camera_url` in `flag_detector_color_identification.py` if the address has changed. Its format is:
+It helps fill small black gaps and holes inside white regions. This is useful when the flag surface contains small imperfections.
 
-```text
-http://<camera-ip>:81/stream
+The function returns the cleaned mask for use by the contour detection stage.
+
+### `find_largest_blob(mask, settings)`
+
+This function identifies the largest valid connected contour in a binary mask. It begins with cv2.findContours(), which extracts the boundaries of white regions in the mask.
+
+The selected parameters are:
+
+- cv2.RETR_EXTERNAL: Retrieves only the outermost contours. This is appropriate because the system is interested in the external boundary of each candidate rather than nested internal contours.
+- cv2.CHAIN_APPROX_SIMPLE: Reduces redundant points along straight contour segments, making the contour representation more compact.
+
+The function then calculates the image area and derives the minimum allowed contour area from min_flag_area_ratio. Each contour is checked against the minimum area threshold. If it is too small, it is rejected.
+
+For the remaining contours, cv2.boundingRect() calculates the smallest upright rectangle that encloses the contour. The width and height of this rectangle are used to calculate its aspect ratio. If aspect_ratio_range is configured, contours outside the allowed interval are rejected.
+
+Every remaining candidate is stored with its area and bounding box. The function then returns the candidate with the largest contour area. If no candidate passes the filters, it returns None.
+
+Selecting the largest valid blob is a simple way to prioritize the most prominent colored region in the frame. It is not a guarantee that the selected region is the flag. A larger object of a similar color could still be selected.
+
+### `detect_flag(frame, settings)`
+
+This is the main detection function. It combines the preprocessing, color segmentation, contour filtering, and candidate selection stages.
+
+#### Step 1: Gaussian blur
+
+```python
+blurred_frame = cv2.GaussianBlur(
+    frame, (blur_ksize, blur_ksize), 0
+)
 ```
 
-Close any browser camera stream before starting the detector. From the repository directory, run:
+Gaussian blur smooths the image by replacing each pixel with a weighted average of nearby pixels. Nearby pixels closer to the center of the kernel receive greater weight.
 
-```powershell
-python flag_detector_color_identification.py
+I included this step because the ESP32-CAM image may contain noise and small variations in pixel values. Without smoothing, these variations can create isolated pixels that fall inside a color threshold.
+
+The kernel size is configurable, allowing the amount of smoothing to be adjusted. Blurring is a compromise: too little smoothing may leave noise, while too much can weaken the boundaries of the flag.
+
+#### Step 2: Convert BGR to HSV
+
+```python
+hsv = cv2.cvtColor(blurred_frame, cv2.COLOR_BGR2HSV)
 ```
 
-A microSD card is not required for this live-stream workflow. `requirements.txt` pins the GUI-enabled OpenCV and NumPy versions from the current development environment. A fresh installation from these pins has not yet been tested. Keep the main file and both packages together when sharing the project.
+OpenCV provides the camera frame in BGR format. The frame is converted to HSV because HSV makes it more convenient to define color thresholds independently of brightness.
 
-## Flag announcement and optional LCD output
+#### Step 3: Search the configured colors
 
-Adapted from the teammate's `Updated` commit (`1545dff`). By default, a confirmed flag prints:
+The function iterates through every color in settings["colors"]. For each color, it calls build_mask() to create the mask and find_largest_blob() to identify its largest valid candidate.
 
-```text
-FLAG DETECTED
-COLOR: RED
+The detector compares the areas of the candidates found for different colors. It keeps the candidate with the largest contour area as the overall result. This design allows the system to identify a color automatically without requiring the operator to select a color before processing begins.
+
+#### Step 4: Handle missing detections
+
+If no valid candidate is found for any color, the function returns:
+
+```python
+{"detected": False}
 ```
 
-Repeated confirmed detections of the same color produce no additional announcement. Ten consecutive unconfirmed updates allow another announcement; failed camera reads also count. This threshold counts updates, not seconds. A different confirmed color also permits a new announcement. Confirmation still requires four detections.
+This tells the main application that the current frame does not contain an accepted detection.
 
-`USE_ESP32 = False` in the main file keeps hardware output disabled. Terminal mode does not need pySerial. For a separate USB bench test, install `python -m pip install pyserial`, set `LCD_SERIAL_PORT` to the control ESP32's actual port and enable `USE_ESP32`. This sends `FLAG_DETECTED,RED\n` at 115200 baud; the ESP32 firmware must parse it and update the physical LCD. `COM5` is only a placeholder. USB Serial is not the planned Wi-Fi transport.
+#### Step 5: Calculate the bounding box and center
 
-The optional Serial port has one-second read/write limits and a two-second boot wait; these do not restore camera timeout options. Serial setup errors stop startup with an error. A write failure prints a warning, closes the port and continues with terminal announcements. Camera and Serial resources are closed on exit.
+When a candidate is found, the function extracts its bounding box coordinates (x, y, w, h) and calculates the center:
 
-No target-lost message is sent and the LCD is not cleared by this Python feature. It is an announcement channel, not a continuous steering signal or motor watchdog. Hardware display behavior has not been tested.
-
-Run the offline checks from the repository directory:
-
-```powershell
-python -m unittest discover -s tests -v
+```python
+center_x = x + w // 2
+center_y = y + h // 2
 ```
 
-Serial API reference: [pySerial documentation](https://pyserial.readthedocs.io/en/latest/pyserial_api.html).
+### FlagStabilizer class
 
-## Keyboard controls
+The FlagStabilizer class was introduced to reduce the effect of unstable detections between frames.
 
-Use an English keyboard layout and focus the **Flag Vision Module** window before pressing a key.
+A camera processes a continuous sequence of images. A single frame may contain noise, a temporary lighting change, or an incorrectly classified region. If the system announces every individual detection, the output may change unnecessarily.
 
-| Key | Action |
-| --- | --- |
-| `q` | Exit the detector. |
+The stabilizer checks whether the same color appears in consecutive frames.
 
-Detection starts automatically. `c` does not open a selector or change detection behavior. Settings are loaded at startup only; restart Python after changing `settings.json`.
+#### `__init__(required_consecutive_frames=4)`
 
-If settings cannot be loaded at startup, the program prints an error and exits. Validation is incomplete; not every malformed value is rejected before detection starts.
+This method initializes the stabilizer.
 
-## Horizontal position for control integration
+- required_frames stores the number of consecutive detections required for confirmation.
+- current_color stores the color being tracked.
+- consecutive_count stores the number of consecutive frames in which that color has been detected.
 
-For a confirmed detection, the preview displays `X error`. The image midpoint is `(width - 1) / 2`, and the error is `(flag_center_x - midpoint) / midpoint`. A single-column image uses zero to avoid division by zero.
+The current setting requires four consecutive detections.
 
-- `-1`: left edge of the image.
-- Near `0`: centered in the image.
-- `+1`: right edge of the image.
+#### `update(detection_result)`
 
-This value is currently calculated and displayed only for confirmed detections. It is not yet transmitted to the control ESP32 or used to command motors. The control team must agree on communication and steering behavior before integration.
+This method processes the detection result from each frame. If a detection exists and its color matches current_color, the consecutive count is increased. If a different color is detected, the current color is replaced and the counter is reset to one because the current frame is the first detection of the new color. If no detection is found, the color and counter are reset, and the function returns {"confirmed": False}.
 
-## Camera failure handling
+Once the counter reaches the required number of frames, the method returns a confirmed result containing the color, center, bounding box, and area from the current detection.
 
-The stream opens once with `cv2.VideoCapture(url)` using OpenCV defaults. There are no application-configured opening/read timeouts and no automatic reconnection. Backend defaults may still apply; a blocked opening or read has no application-defined time limit and can delay `q` or error handling.
+This approach reduces false announcements caused by isolated detections and short interruptions. However, it does not completely eliminate false positives.
 
-When a read returns failure, confirmation resets and the preview replaces the old detection with `Camera unavailable`. After 30 consecutive failed reads, the program exits and releases the capture. The threshold counts failed reads, not seconds. `q` is checked after reads return, including during the failed-read wait.
+### `main()`
 
-Restart Python to open a new stream after a connection failure. If the camera's IP changes, update `camera_url` first. A temporary failed read followed by successful reads on the same capture can still recover naturally, but the application does not reopen it. Four new same-color detections are required after a failed read.
+The main() function connects the different components and manages the complete application loop.
 
-## Current settings
+## 7. Problems Faced During Development
 
-| Setting | Current value | Meaning |
-| --- | --- | --- |
-| `min_flag_area_ratio` | `0.001` | Minimum contour area is 0.1% of the processed image area: about 76.8 pixels² at 320×240. This is a noise threshold, not a physical flag-size estimate. |
-| `aspect_ratio_range` | `null` | No restriction on the bounding box width/height ratio. |
-| `kernel_size` | `3` | Morphological cleanup uses a 3×3 kernel. |
-| `blur_kernel_size` | `3` | Gaussian smoothing uses a 3×3 kernel. |
+### Limited image quality of the ESP32-CAM
 
-Current practice red profile, inside `colors` in `settings.json`:
+One of the main challenges is the quality of the ESP32-CAM. Compared with a better camera, its image can be less reliable under difficult lighting conditions and may contain noise, blur, or inconsistent color reproduction.
 
-```json
-"red": {
-  "lower1": [0, 45, 40],
-  "upper1": [10, 255, 255],
-  "lower2": [170, 45, 40],
-  "upper2": [179, 255, 255]
-}
-```
+This directly affects HSV thresholding. The detector operates on the pixels provided by the camera, so inaccurate color information can lead to missing detections or incorrect color classification.
 
-Red uses two intervals because its hue crosses the ends of OpenCV's standard 8-bit hue range, 0–179. Red is a practice color; the competition color must not be assumed in advance.
+### Adjusting HSV ranges
 
-## Historical screenshots and live evidence
+The initial HSV thresholds cannot be assumed to work perfectly with the actual ESP32-CAM.
 
-The following four user-supplied screenshots document the earlier sample-selection implementation, which has been removed. They are retained as historical evidence, not instructions or validation of the current automatic mode. Images are stored under `docs/screenshots/` beside this README. These individual captures do not establish continuous performance or a measured accuracy score.
+They must be checked against images captured by the camera. Different cameras can produce different pixel values for the same physical color because of exposure, white balance, sensor characteristics, and image processing.
 
-### 1. Selecting a calibration sample
+As a result, the ranges in settings.json need to be adjusted based on the actual flag and the camera's output. This is especially important when the competition flag's color is announced and the system must be configured for that target.
 
-The operator opened the **Calibration sample** window and drew a blue selection rectangle inside the red practice target, excluding the surrounding background. The still image allowed a sample to be selected before confirmation with Enter. This capture documents the removed selection interface; it does not establish that the color was recognized or locked.
+Lighting was another important challenge.
 
-![Selecting a region inside the red practice target with the c key](docs/screenshots/02-calibration-selection.png)
+For this reason, the camera was tested under different lighting conditions. The HSV thresholds were checked in each condition rather than selected from one image and assumed to work everywhere.
 
-### 2. Confirmed target-color selection
+### Choosing a suitable candidate
 
-After confirming the sample, the terminal reported `Target color locked: red` and `Selected 4536 calibration pixels.` This live capture confirms that the selected sample was recognized as red and the target-color selection was set. It does not demonstrate automatic HSV estimation or yet prove behavior with distractors.
+The system selects the largest valid contour for each color and then chooses the largest candidate across all configured colors. This is a practical rule for a simple environment with one prominent flag, but it introduces a limitation. If a different object of a configured color occupies more image area than the flag, the system may select that object instead.
 
-![Terminal confirms red target-color selection and 4536 sample pixels](docs/screenshots/03-target-color-locked.png)
+The area filter and aspect-ratio filter reduce some unwanted candidates, but neither can prove that a region is a flag.
 
-### 3. Selected target with a different-colored distractor
+### Unstable frame-by-frame detections
 
-After the red sample was selected, the live display reported `Flag: red | Area: 3773` and `Center: (108, 113)`. The green bounding box surrounds the red paper, while a dark blue-looking object is visible below it without a detection box. This documents the displayed result for this earlier mode. The image does not establish that the other object matches a configured profile or has a larger valid contour, and it does not validate distractor behavior in current automatic mode.
+A candidate may appear in one frame and disappear in the next because of motion. To reduce this instability, I implemented the FlagStabilizer class, which requires four consecutive detections of the same color before confirmation.
 
-![Red paper detected at center 108, 113 with contour area 3773 and a dark blue-looking object below](docs/screenshots/04-selected-color-only.png)
+This improves consistency but introduces a small delay. It can also fail if the camera repeatedly loses the target or if a false detection persists for the required number of frames.
 
-### 4. Selected color removed
+## 8. Limitations and Cases Where the Approach May Fail
 
-Following the instruction to remove the red paper while retaining the running session, the user supplied this capture. No red paper or detection box is visible, and the display shows Searching / Stabilizing. This is an observed target-absent result. The earlier dark blue-looking object is not clearly visible here, so the screenshot does not establish rejection of a visible wrong-color distractor. A short recording or repeated observations would provide stronger evidence of continued behavior.
+Although the developed approach is appropriate for the current requirements, it has several limitations that must be considered before deployment.
 
-![Searching with no red practice target visible after its removal](docs/screenshots/05-selected-color-absent.png)
+### Objects with similar colors
 
-## Verification record
+The detector relies primarily on color. If another object in the background has a color within one of the configured HSV ranges, it may be detected as a candidate. This is particularly problematic if the object is large enough to pass the area filter and has an acceptable bounding-box aspect ratio.
 
-| Check | Evidence / status |
-| --- | --- |
-| ESP32-CAM input | User confirmed moving live video after correcting the camera IP. |
-| Non-white flags on white background | Offline regression tests on 2026-10-20 check six configured colors without sample selection, no confirmation on a blank white sheet, and loss of confirmation after target removal. Real-camera lab validation remains pending. |
-| Calibration removal and automatic detection | On 2026-10-20, all 13 offline tests passed. A main-loop check sent `c` on the first frame, confirmed red after four frames and blue after four more, and verified that no ROI selector was called. No live camera test was performed for this removal. |
-| Historical announcement integration | Nine offline tests passed on 2026-10-18: repeat suppression, ten-update rearming, color/sample changes, exact Serial bytes, optional setup/cleanup, write-failure fallback, main-loop failed reads and real detection on synthetic frames. The sample-change check describes the removed feature. No physical LCD or USB device test performed. |
-| Dim red target after manual HSV changes | User reported successful detection. |
-| Historical `r` shortcut | Previously reported working; removed by user request. Restart Python to apply saved settings. |
-| Historical source and detection helpers | Offline check on 2026-10-17: source parsed; solid synthetic red, green, blue, and yellow samples recognized in that version. |
-| Historical folder reorganization and cleanup | Offline regression check on 2026-10-18: 70 synthetic detection comparisons matched the committed detector; simulated selection, cancellation, rejection and replacement passed; full-loop previews, logs and capture lifecycle matched through `c`, `r`, failed reads and recovery. These controls and recovery describe earlier versions. Settings loaded correctly from another working directory. No live camera test was performed for this refactor. |
-| Historical color restriction logic (removed) | Offline check on 2026-10-17: selected red ignored a larger blue region; removing red produced no detection. Current automatic mode can select another configured color. |
-| Confirmation logic | Offline check on 2026-10-17: confirmed on the fourth same-color detection and reset on a no-detection result. |
-| Historical reconnection implementation (removed) | Simulated main-loop checks on 2026-10-18 passed for recovery, selected-color retention, four new detections after recovery, a cleared offline display, five failed attempts, `q` cancellation, and capture cleanup. These checks describe the removed implementation; current failure-exit behavior is tested separately. |
-| Historical live `c` sample-selection interface (removed) | User supplied a screenshot of the selector with a rectangle inside the red practice target. |
-| Historical live sample recognition and target-color lock (removed) | User supplied terminal evidence: `Target color locked: red` and `Selected 4536 calibration pixels.` |
-| Historical live red detection after sample selection | Screenshot reports red, contour area 3773, center (108, 113), with a dark blue-looking object below and no box on it. This is one observed scene from the earlier mode. |
-| Historical selected target absent | User supplied a screenshot showing Searching / Stabilizing with no red paper or detection box visible. This supports the observed frame in the earlier mode, not long-run false-positive performance or current automatic behavior. |
-| Distractors in current automatic mode | Live validation pending. Historical sample-selection screenshots do not establish current behavior; automatic mode chooses the largest valid region across all six profiles. |
+The system does not currently use a trained classifier to distinguish a flag from every other object with a similar color.
 
-Offline checks use synthetic images and mocked camera or GUI operations. Earlier rows describe the implementation tested at that time. These checks do not establish real-camera accuracy or real GUI behavior.
+### Severe lighting changes
 
-For each live test, record: test ID, lighting, resolution, actual flag color, target/distractor arrangement, steps, expected result, actual result, pass/fail, and evidence filename. Do not mark a case as passed until it has been run.
+Strong shadows, overexposure, reflections, or automatic camera adjustments can move the flag's pixels outside the configured HSV ranges. The result may be a fragmented mask, an incorrect color classification, or no detection at all.
 
-## Other problems encountered
+HSV reduces some of the difficulty associated with defining color thresholds, but it does not eliminate lighting sensitivity.
 
-| Problem | Response and remaining limitation |
-| --- | --- |
-| Old camera IP timed out | Read the new address in Serial Monitor and update the stream URL. The source is still hard-coded. |
-| Browser preview froze | Stopped the old stream and changed JPEG quality from 10 to 20 at 320×240 to reduce traffic. A bounded stream test completed without disconnecting; long-run stability is not established. Camera settings may reset after reboot. |
-| Missing `min_flag_area_ratio` | Updated the actual settings file loaded by the process. Duplicate project folders and relative paths made this confusing. |
-| Syntax/indentation errors while adding shortcuts | Aligned `if`/`elif` branches and restored the missing `build_mask(...)` call. |
-| Key appeared unresponsive | Check window focus, English keyboard layout, saved code, and whether the stream is still advancing. The exact cause of the reported incident was not confirmed. |
+### Small or distant flags
 
-## Remaining work
+The minimum area ratio rejects candidates that occupy too little of the image. If the flag is far away or appears very small, its contour may fall below the threshold. A distant flag may also contain too few pixels to preserve its color accurately. Lowering the area threshold may help detect smaller targets, but it also allows more noise and background objects to pass the filter.
 
-- Test lighting changes, multiple flag sizes, no flag, wrong colors, and same-color distractors. There is no measured accuracy score yet.
-- Improve settings validation; the default settings path now resolves from the project directory.
-- Live-test camera loss, exit after failed reads, manual restart and changed IP addresses. Measure blocking and latency with backend defaults. Add stale-frame detection; a stream that returns old frames can still appear readable.
-- Agree the controller interface and confirm the allowed processing architecture. The current laptop prototype does not demonstrate standalone competition operation.
-- Integrate image-position output with control. The ultrasonic sensor, rather than apparent flag size, must provide the mission's distance measurement.
+### Incorrect aspect-ratio assumptions
 
-Color-based detection is not physical-object tracking: another object matching any configured profile can still be detected. Terminal color announcement and optional Serial output are implemented; Wi-Fi control integration, the physical LCD receiver and the 50 cm control task remain pending.
+The current aspect-ratio interval is broad, but it still rejects contours outside the configured limits. If the flag appears at an unusual angle, is partially hidden, or has proportions outside the selected interval, it may be rejected even when its color is correct.
 
-## Recorded implementation commits
+Because the actual flag dimensions are not yet known, the current limits should be treated as initial values rather than final competition parameters.
 
-| Commit | Change |
-| --- | --- |
-| `f721969` | Read ESP32-CAM video stream. |
-| `68d0dd8` | Adjust practice red settings and make size filters configurable. |
-| `cf36d2a` | Historically added `r` settings reload; this shortcut has since been removed. |
-| `6fa884f` | Historically added sample selection and a recognized-color restriction; this feature has since been removed. |
-| `45a544b` | Reset confirmation after a failed frame read. |
+### Overlapping color ranges
+
+The HSV profiles are configured independently. If two color ranges overlap, a pixel or region may satisfy more than one profile. For example, the boundaries between red, orange, and yellow may be difficult to separate under certain lighting conditions. If different color profiles identify similar regions, the detector selects the candidate with the largest contour area rather than applying a separate color-confidence score.
+
+This means the selected color may be wrong even if the system detects the physical flag region correctly.
+
+### Delay during confirmation
+
+The detector must observe four consecutive frames with the same color before returning a confirmed result. This delay depends on the camera frame rate. If frames arrive slowly or the camera stream is unstable, confirmation may take longer than expected. The current stabilizer also resets its counter when a frame contains no accepted detection. Repeated interruptions can therefore prevent confirmation even when the flag is visible most of the time.
+
+## 9. Conclusion
+
+The Computer Vision module was developed using classical image-processing techniques in OpenCV to detect and identify a colored flag. The approach uses HSV thresholding, binary masks, morphological filtering, contour extraction, geometric filtering, largest-blob selection, and consecutive-frame confirmation.
+
+We selected this approach because it matches the current project requirements, avoids the need for a labeled training dataset, and allows the detection parameters to be adjusted easily when the actual competition flag is known. It also provides a relatively lightweight and interpretable solution for the ESP32-CAM-based system.
+
+Our GitHub repo https://github.com/shrouqelshafey/UGV-Computer-Vision-.git
